@@ -1,3 +1,4 @@
+import { toMinor } from "@freenary/api/lib/money";
 import type { TransactionFilter } from "@freenary/api/lib/transaction-filters";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Match } from "effect";
@@ -15,6 +16,7 @@ import {
   draftForField,
   isReadyToApply,
   stepBack,
+  withAccount,
   withCategory,
   withCompany,
   withOperator,
@@ -27,12 +29,14 @@ import {
   lastWordOf,
   withoutLastWord,
 } from "./filter-suggestions";
-import type { FilterSuggestion } from "./filter-suggestions";
+import type { AccountChoice, FilterSuggestion } from "./filter-suggestions";
 import { searchKey, withoutFilterAt } from "./filter-tokens";
 import type { TransactionDirection } from "./search";
 import { parseAmountBound } from "./transaction-filters";
 
 export interface FilterTokenSearchOptions {
+  accounts: readonly AccountChoice[];
+  currency: string;
   direction: TransactionDirection;
   filters: TransactionFilter[];
   from: Date;
@@ -44,12 +48,13 @@ export interface FilterTokenSearchOptions {
 }
 
 const COMPANY_SETTLE_MS = 250;
-const MINOR_PER_UNIT = 100;
 export const NO_HIGHLIGHT = -1;
 
 export const filterKey = (filter: TransactionFilter) => searchKey([filter], "");
 
 export const useFilterTokenSearch = ({
+  accounts,
+  currency,
   direction,
   filters,
   from,
@@ -85,9 +90,7 @@ export const useFilterTokenSearch = ({
     placeholderData: keepPreviousData,
   });
 
-  const typedAmountMinor = Math.round(
-    parseAmountBound(query, locale) * MINOR_PER_UNIT
-  );
+  const typedAmountMinor = toMinor(parseAmountBound(query, locale), currency);
 
   const companies = {
     isError: merchantsQuery.isError,
@@ -98,7 +101,17 @@ export const useFilterTokenSearch = ({
     query: settledCompanyQuery,
   };
 
-  const context = { companies, draft, filters, query, text, typedAmountMinor };
+  const context = {
+    accounts,
+    companies,
+    currency,
+    draft,
+    filters,
+    query,
+    text,
+    typedAmountMinor,
+  };
+
   const suggestions = filterSuggestionsFor(context);
   const status = filterSuggestionStatus(context, suggestions);
   const isChoosingSeveral =
@@ -147,6 +160,19 @@ export const useFilterTokenSearch = ({
   const choose = (suggestion: FilterSuggestion) =>
     Match.value(suggestion).pipe(
       Match.discriminatorsExhaustive("kind")({
+        account: ({ accountId }) => {
+          if (draft?.stage !== "values" || draft.field !== "account") {
+            return;
+          }
+
+          const next = withAccount(draft, accountId);
+
+          if (isReadyToApply(next)) {
+            apply(appliedValues(next));
+          } else {
+            enterStage(next);
+          }
+        },
         amount: ({ minorUnits }) => {
           if (draft?.stage === "amount") {
             apply(appliedAmount(draft, minorUnits));

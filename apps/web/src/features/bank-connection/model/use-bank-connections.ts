@@ -4,8 +4,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { toast } from "sonner";
 
+import { invalidateBudgetData, syncAccountsToEnd } from "@/entities/budget";
 import { m } from "@/paraglide/messages.js";
-import { client, invalidateBudgetData, orpc } from "@/shared/api";
+import { client, orpc } from "@/shared/api";
 
 import { institutionKey } from "./bank-rows";
 
@@ -34,8 +35,8 @@ export const useBankConnections = ({
   const disconnectMutation = useMutation({
     mutationFn: (connectionId: string) =>
       client.bankConnection.disconnect({ connectionId }),
-    onError: (error) => {
-      toast.error(error.message);
+    onError: () => {
+      toast.error(m.bank_disconnect_error());
     },
     onSuccess: async ({
       accountsRemoved,
@@ -76,7 +77,7 @@ export const useBankConnections = ({
 
   const resyncMutation = useMutation({
     mutationFn: (connection: BankConnection) =>
-      client.budget.syncAccounts({ connectionId: connection.id, force: true }),
+      syncAccountsToEnd({ connectionId: connection.id, force: true }),
     mutationKey: orpc.budget.syncAccounts.mutationKey(),
     onError: () => {
       toast.error(m.budget_sync_error());
@@ -93,8 +94,22 @@ export const useBankConnections = ({
         invalidateBudgetData(queryClient),
       ]);
 
+      if (sync.failures.some((failure) => failure.kind === "categorisation")) {
+        toast.warning(m.budget_sync_categorisation_error());
+      }
+
       if (!sync.success) {
-        toast.error(m.budget_sync_error());
+        toast.error(
+          m.budget_sync_connection_error({
+            institutions: connection.institutionName,
+          })
+        );
+
+        return;
+      }
+
+      if (!sync.started) {
+        toast.info(m.bank_sync_already_running());
 
         return;
       }

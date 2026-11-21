@@ -6,8 +6,10 @@ import {
 } from "@tanstack/react-query";
 import { toast } from "sonner";
 
+import { invalidateBudgetData, syncAccountsToEnd } from "@/entities/budget";
 import { m } from "@/paraglide/messages.js";
-import { client, invalidateBudgetData, orpc } from "@/shared/api";
+import { getLocale } from "@/paraglide/runtime.js";
+import { orpc } from "@/shared/api";
 
 interface SyncVariables {
   force?: boolean;
@@ -18,7 +20,7 @@ export const useSyncAccounts = () => {
 
   const syncMutation = useMutation({
     mutationFn: (variables: SyncVariables = {}) =>
-      client.budget.syncAccounts({ force: variables.force }),
+      syncAccountsToEnd({ force: variables.force }),
     mutationKey: orpc.budget.syncAccounts.mutationKey(),
     onError: (_error, variables) => {
       toast.error(m.budget_sync_error(), {
@@ -35,8 +37,20 @@ export const useSyncAccounts = () => {
     onSuccess: async (sync, variables) => {
       await invalidateBudgetData(queryClient);
 
+      if (sync.failures.some((failure) => failure.kind === "categorisation")) {
+        toast.warning(m.budget_sync_categorisation_error());
+      }
+
       if (!sync.success) {
-        toast.error(m.budget_sync_error(), {
+        const institutions = sync.failures.flatMap((failure) =>
+          failure.kind === "connection-sync" ? [failure.institutionName] : []
+        );
+
+        const named = new Intl.ListFormat(getLocale(), {
+          type: "conjunction",
+        }).format(institutions);
+
+        toast.error(m.budget_sync_connection_error({ institutions: named }), {
           action: {
             label: m.budget_sync_retry(),
             onClick: () => syncMutation.mutate(variables),

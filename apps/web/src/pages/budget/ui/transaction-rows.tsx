@@ -11,16 +11,17 @@ import { RiReceiptLine } from "@remixicon/react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useCallback, useEffect, useMemo, useRef } from "react";
 
+import type { Transaction } from "@/entities/budget";
 import { m } from "@/paraglide/messages.js";
 import { getLocale } from "@/paraglide/runtime.js";
 
 import type { TimeRange } from "../model/period";
-import type { Transaction } from "../model/transaction";
 import {
   buildVirtualItems,
   HEADER_HEIGHT,
   ROW_HEIGHT,
 } from "../model/transaction-groups";
+import { LoadError } from "./load-error";
 import { StaleRegion } from "./stale-region";
 import { TransactionGroupHeader } from "./transaction-group-header";
 import { TransactionRow } from "./transaction-row";
@@ -35,6 +36,9 @@ export const TransactionRows = ({
   hasMore,
   onLoadMore,
   isLoading,
+  isError,
+  isRetrying,
+  onRetry,
   isIncoming,
   isStale,
   onTransactionClick,
@@ -44,6 +48,9 @@ export const TransactionRows = ({
   hasMore: boolean;
   onLoadMore: () => void;
   isLoading: boolean;
+  isError: boolean;
+  isRetrying: boolean;
+  onRetry: () => void;
   isIncoming: boolean;
   isStale: boolean;
   onTransactionClick: (tx: Transaction) => void;
@@ -51,7 +58,7 @@ export const TransactionRows = ({
 }) => {
   "use no memo";
   const parentRef = useRef<HTMLDivElement>(null);
-  const hover = useFluidHover(parentRef, { gapClick: false });
+  const hover = useFluidHover(parentRef, { gapClick: false, nearest: true });
   const { handlers, registerItem, remeasure } = hover;
 
   const locale = getLocale();
@@ -103,6 +110,16 @@ export const TransactionRows = ({
   useEffect(() => {
     loadMoreCheck();
   }, [loadMoreCheck]);
+
+  if (isError) {
+    return (
+      <LoadError
+        isRetrying={isRetrying}
+        onRetry={onRetry}
+        title={m.budget_transactions_load_error_title()}
+      />
+    );
+  }
 
   if (transactions.length === 0 && isLoading) {
     return (

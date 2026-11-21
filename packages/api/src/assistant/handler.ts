@@ -1,6 +1,6 @@
-import { auth } from "@freenary/auth";
+import { requestSession } from "@freenary/auth";
 import { AI_CHAT_RATE_LIMIT } from "@freenary/auth/policy";
-import { createRouterClient } from "@orpc/server";
+import { createRouterClient, ORPCError } from "@orpc/server";
 import type { UIMessage } from "ai";
 import { convertToModelMessages, stepCountIs, streamText } from "ai";
 import { Data, Effect, Match } from "effect";
@@ -8,19 +8,19 @@ import type { RequestLogger } from "evlog";
 import { createAILogger } from "evlog/ai";
 import { z } from "zod";
 
+import { isJsonRequest } from "../lib/json-request";
 import { consumeRateLimit } from "../lib/rate-limit";
 import { appRouter } from "../routers/index";
 import {
-  activeConversation,
   appendTurn,
   conversationMessages,
+  ownedConversation,
 } from "./conversation";
-import { assistantSystemPrompt } from "./prompt";
+import { assistantSystemPrompt, promptDashboards } from "./prompt";
 import { assistantModel } from "./provider";
 import { assistantTools } from "./tools";
 import {
   answerableParts,
-  isoDay,
   isStorableOutcome,
   LOCALE,
   MAX_QUESTION_CHARS,
@@ -35,6 +35,7 @@ export interface AssistantChatOptions {
 
 type ChatRefusalReason =
   | { readonly kind: "rate-limited"; readonly cause: unknown }
+  | { readonly kind: "rate-limit-unavailable"; readonly cause: unknown }
   | { readonly kind: "malformed-body"; readonly cause: unknown }
   | { readonly kind: "question-too-long"; readonly chars: number };
 
@@ -49,18 +50,29 @@ const questionSchema = z.looseObject({
 });
 
 const chatRequestSchema = z.object({
+  dashboardId: z.string().max(64).optional(),
+  id: z.string().max(64),
   locale: z.string().regex(LOCALE).optional(),
   messageId: z.string().optional(),
   messages: z.array(z.looseObject({ role: z.string() })).default([]),
+  today: z.iso.date().optional(),
   trigger: z.string().optional(),
 });
 
 const REGENERATE_TRIGGER = "regenerate-message";
 
-const refusalResponse = Match.type<ChatRefusalReason>().pipe(
+export const rateLimitRefusal = (cause: unknown): ChatRefusalReason =>
+  cause instanceof ORPCError && cause.code === "TOO_MANY_REQUESTS"
+    ? { cause, kind: "rate-limited" }
+    : { cause, kind: "rate-limit-unavailable" };
+
+export const refusalResponse = Match.type<ChatRefusalReason>().pipe(
   Match.discriminatorsExhaustive("kind")({
     "malformed-body": () => new Response("bad_request", { status: 400 }),
-    "question-too-long": () => new Response("bad_request", { status: 400 }),
+    "question-too-long": () =>
+      new Response("question_too_long", { status: 400 }),
+    "rate-limit-unavailable": () =>
+      new Response("unavailable", { status: 503 }),
     "rate-limited": () => new Response("rate_limited", { status: 429 }),
   })
 );
@@ -72,7 +84,7 @@ const admitChatRequest = Effect.fnUntraced(
   function* admit(request: Request, userId: string) {
     yield* Effect.tryPromise({
       catch: (cause) =>
-        new ChatRequestRefused({ reason: { cause, kind: "rate-limited" } }),
+        new ChatRequestRefused({ reason: rateLimitRefusal(cause) }),
       try: () => consumeRateLimit(`ai-chat:${userId}`, AI_CHAT_RATE_LIMIT),
     });
 
@@ -119,7 +131,11 @@ export const handleAssistantChat = async ({
   log,
   request,
 }: AssistantChatOptions): Promise<Response> => {
-  const session = await auth.api.getSession({ headers: request.headers });
+  if (!isJsonRequest(request)) {
+    return new Response("unsupported_media_type", { status: 415 });
+  }
+
+  const session = await requestSession(request.headers);
 
   if (!session?.user) {
     return new Response("unauthorized", { status: 401 });
@@ -145,10 +161,15 @@ export const handleAssistantChat = async ({
     context: { auth: null, headers: request.headers, session },
   });
 
-  const [conversation, accounts] = await Promise.all([
-    activeConversation(session.user.id),
+  const [conversation, accounts, dashboards] = await Promise.all([
+    ownedConversation(session.user.id, body.id),
     api.budget.getAccounts(),
+    promptDashboards(api, body.dashboardId),
   ]);
+
+  if (!conversation) {
+    return new Response("not_found", { status: 404 });
+  }
 
   const stored = await conversationMessages(conversation.id);
 
@@ -182,18 +203,17 @@ export const handleAssistantChat = async ({
 
   const stream = streamText({
     abortSignal: request.signal,
-    instructions: assistantSystemPrompt({
-      firstTransactionDate: isoDay(accounts.firstTransactionDate),
-      hasAccounts: accounts.hasAccounts,
-      lastTransactionDate: isoDay(accounts.lastTransactionDate),
-      locale: body.locale ?? "en",
-      today: new Date().toISOString().slice(0, 10),
-    }),
+    instructions: assistantSystemPrompt(
+      accounts,
+      body.locale ?? "en",
+      body.today ?? new Date().toISOString().slice(0, 10),
+      dashboards
+    ),
     messages: await convertToModelMessages(originalMessages),
     model: ai.wrap(model),
     stopWhen: stepCountIs(MAX_STEPS),
     toolChoice: "auto",
-    tools: assistantTools(api),
+    tools: assistantTools(api, { conversationId: conversation.id }),
   });
 
   const answerId = crypto.randomUUID();

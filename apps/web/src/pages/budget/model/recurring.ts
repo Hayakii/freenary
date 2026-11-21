@@ -1,57 +1,22 @@
 import type { SpendingCategory } from "@freenary/api/lib/taxonomy";
 
+import {
+  merchantLabel,
+  NO_USABLE_CADENCE,
+  upcomingPayments,
+  usableCadenceDays,
+} from "@/entities/recurring";
+import type { RecurringData, RecurringItem } from "@/entities/recurring";
 import type { Locale } from "@/paraglide/runtime.js";
+import { addDays, startOfDay } from "@/shared/lib/calendar-day";
 
-export type RecurrenceConfidence = (typeof RECURRENCE_CONFIDENCES)[number];
+export type RecurringMonth = RecurringData["monthly"][number];
 
-export type RecurrenceFrequency = (typeof RECURRENCE_FREQUENCIES)[number];
+export type RecurrenceConfidence = RecurringItem["confidence"];
 
-export type RecurrenceKind = (typeof RECURRENCE_KINDS)[number];
+export type RecurrenceFrequency = RecurringItem["frequency"];
 
-export interface RecurringItem {
-  amountSpread: number;
-  category: SpendingCategory;
-  confidence: RecurrenceConfidence;
-  currency: string;
-  frequency: RecurrenceFrequency;
-  intervalDays: number;
-  kind: RecurrenceKind;
-  lastSeen: string;
-  merchantKey: string;
-  merchantName: string | null;
-  nextExpected: string;
-  occurrences: number;
-  typicalAmountMinor: number;
-}
-
-export interface RecurringMonth {
-  behavioralMinor: number;
-  discretionaryMinor: number;
-  fixedMinor: number;
-  month: string;
-}
-
-export interface RecurringData {
-  asOf: string;
-  availableBalanceMinor: number | null;
-  currency: string;
-  items: RecurringItem[];
-  monthly: RecurringMonth[];
-  monthlyIncomeMinor: number | null;
-  plannedOutgoingMinor: number | null;
-}
-
-export interface UpcomingPayment {
-  amountMinor: number;
-  category: SpendingCategory;
-  confidence: RecurrenceConfidence;
-  currency: string;
-  date: Date;
-  daysAway: number;
-  id: string;
-  kind: RecurrenceKind;
-  label: string;
-}
+export type RecurrenceKind = RecurringItem["kind"];
 
 type SpendDenominatorKind = "income" | "plan";
 
@@ -122,7 +87,7 @@ export const RECURRENCE_CONFIDENCES = [
   "confirmed",
   "likely",
   "pattern",
-] as const;
+] as const satisfies readonly RecurrenceConfidence[];
 
 export const RECURRENCE_FREQUENCIES = [
   "annual",
@@ -130,9 +95,12 @@ export const RECURRENCE_FREQUENCIES = [
   "monthly",
   "quarterly",
   "weekly",
-] as const;
+] as const satisfies readonly RecurrenceFrequency[];
 
-export const RECURRENCE_KINDS = ["behavioral", "fixed"] as const;
+export const RECURRENCE_KINDS = [
+  "behavioral",
+  "fixed",
+] as const satisfies readonly RecurrenceKind[];
 
 export const UPCOMING_HORIZON_DAYS = 30;
 
@@ -144,29 +112,10 @@ export const TREND_WINDOW_MONTHS = 3;
 
 const TREND_FLAT_RATIO = 0.02;
 
-const MS_PER_DAY = 24 * 60 * 60 * 1000;
-
 const MEAN_DAYS_PER_YEAR = 365.25;
 const MEAN_DAYS_PER_MONTH = MEAN_DAYS_PER_YEAR / 12;
 
-const MAX_PROJECTED_OCCURRENCES = 64;
-
-const NO_USABLE_CADENCE = 0;
 const DEFAULT_PURCHASE_FREQUENCY_LIMIT = 8;
-
-const usableCadenceDays = (item: RecurringItem): number =>
-  item.intervalDays >= 1 ? item.intervalDays : NO_USABLE_CADENCE;
-
-const startOfDay = (date: Date): Date =>
-  new Date(date.getFullYear(), date.getMonth(), date.getDate());
-
-export const dayDelta = (from: Date, to: Date): number =>
-  Math.round(
-    (startOfDay(to).getTime() - startOfDay(from).getTime()) / MS_PER_DAY
-  );
-
-const addDays = (date: Date, days: number): Date =>
-  new Date(date.getTime() + days * MS_PER_DAY);
 
 export const monthlyEquivalentMinor = (item: RecurringItem): number => {
   const days = usableCadenceDays(item);
@@ -182,71 +131,6 @@ export const annualCostMinor = (item: RecurringItem): number => {
   return days === NO_USABLE_CADENCE
     ? 0
     : Math.round((item.typicalAmountMinor * MEAN_DAYS_PER_YEAR) / days);
-};
-
-export const merchantLabel = (item: RecurringItem): string =>
-  item.merchantName ?? item.merchantKey;
-
-const rollForwardToNextSlot = (
-  expected: Date,
-  cadenceDays: number,
-  asOf: Date
-): Date => {
-  let when = expected;
-  let steps = 0;
-
-  while (dayDelta(asOf, when) < 0 && steps < MAX_PROJECTED_OCCURRENCES) {
-    when = addDays(when, cadenceDays);
-    steps += 1;
-  }
-
-  return when;
-};
-
-export const upcomingPayments = (
-  items: RecurringItem[],
-  asOf: Date,
-  horizonDays: number = UPCOMING_HORIZON_DAYS
-): UpcomingPayment[] => {
-  const payments: UpcomingPayment[] = [];
-
-  for (const item of items) {
-    const cadenceDays = usableCadenceDays(item);
-    const expected = new Date(item.nextExpected);
-
-    if (cadenceDays === NO_USABLE_CADENCE || Number.isNaN(expected.getTime())) {
-      continue;
-    }
-
-    let when = rollForwardToNextSlot(expected, cadenceDays, asOf);
-    let daysAway = dayDelta(asOf, when);
-
-    if (daysAway < 0) {
-      continue;
-    }
-
-    let emitted = 0;
-
-    while (daysAway <= horizonDays && emitted < MAX_PROJECTED_OCCURRENCES) {
-      payments.push({
-        amountMinor: item.typicalAmountMinor,
-        category: item.category,
-        confidence: item.confidence,
-        currency: item.currency,
-        date: when,
-        daysAway,
-        id: `${item.merchantKey}@${daysAway}`,
-        kind: item.kind,
-        label: merchantLabel(item),
-      });
-
-      when = addDays(when, cadenceDays);
-      daysAway = dayDelta(asOf, when);
-      emitted += 1;
-    }
-  }
-
-  return payments.toSorted((a, b) => a.date.getTime() - b.date.getTime());
 };
 
 const spendDenominator = (recurring: RecurringData): SpendDenominator => {
@@ -283,7 +167,12 @@ export const recurringSummary = (
     }
   }
 
-  const upcoming = upcomingPayments(recurring.items, asOf);
+  const upcoming = upcomingPayments(
+    recurring.items,
+    asOf,
+    UPCOMING_HORIZON_DAYS
+  );
+
   const { denominatorKind, denominatorMinor } = spendDenominator(recurring);
 
   return {

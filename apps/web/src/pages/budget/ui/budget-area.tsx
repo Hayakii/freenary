@@ -4,9 +4,10 @@ import { Outlet } from "@tanstack/react-router";
 import { useSyncAccounts } from "@/features/account-sync";
 import { m } from "@/paraglide/messages.js";
 import { orpc } from "@/shared/api";
+import { NoBankAccount } from "@/shared/ui/no-bank-account";
 import { SyncButton } from "@/shared/ui/sync-button";
 
-import { NoBankAccount } from "./no-bank-account";
+import { LoadError } from "./load-error";
 
 export const BudgetArea = () => {
   const accountsQuery = useQuery(orpc.budget.getAccounts.queryOptions());
@@ -18,8 +19,26 @@ export const BudgetArea = () => {
     return null;
   }
 
+  if (accountsQuery.isError) {
+    return (
+      <LoadError
+        isRetrying={accountsQuery.isFetching}
+        onRetry={() => {
+          void accountsQuery.refetch();
+        }}
+        title={m.budget_load_error_title()}
+      />
+    );
+  }
+
   if (!accountsQuery.data?.hasAccounts) {
-    return <NoBankAccount />;
+    return (
+      <NoBankAccount
+        actionLabel={m.budget_no_account_cta()}
+        description={m.budget_no_account_description()}
+        title={m.budget_no_account_title()}
+      />
+    );
   }
 
   return (

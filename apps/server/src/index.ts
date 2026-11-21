@@ -1,24 +1,27 @@
 import { cors } from "@elysiajs/cors";
 import { handleAssistantChat } from "@freenary/api/assistant/handler";
 import { createContext } from "@freenary/api/context";
+import { updateCheck } from "@freenary/api/instance/update-check";
+import { sealLegacyProviderTokens } from "@freenary/api/lib/bank-provider-user";
+import { isJsonRequest } from "@freenary/api/lib/json-request";
 import {
   handleMockConsent,
   MOCK_CONSENT_PATH,
 } from "@freenary/api/providers/mock/consent";
 import { appRouter } from "@freenary/api/routers/index";
-import { auth } from "@freenary/auth";
+import { auth, requestSession } from "@freenary/auth";
 import { env } from "@freenary/env/server";
 import { readSetupState } from "@freenary/instance-config";
 import { OpenAPIHandler } from "@orpc/openapi/fetch";
 import { OpenAPIReferencePlugin } from "@orpc/openapi/plugins";
 import { ORPCError, onError } from "@orpc/server";
 import { RPCHandler } from "@orpc/server/fetch";
+import { SimpleCsrfProtectionHandlerPlugin } from "@orpc/server/plugins";
 import { ZodToJsonSchemaConverter } from "@orpc/zod/zod4";
 import { Effect } from "effect";
 import { Elysia } from "elysia";
 import { initLogger } from "evlog";
 import { createAuthMiddleware } from "evlog/better-auth";
-import type { BetterAuthInstance } from "evlog/better-auth";
 import { evlog } from "evlog/elysia";
 import { createFsDrain } from "evlog/fs";
 
@@ -36,6 +39,7 @@ const rpcHandler = new RPCHandler(appRouter, {
       }
     }),
   ],
+  plugins: [new SimpleCsrfProtectionHandlerPlugin()],
 });
 
 const apiHandler = new OpenAPIHandler(appRouter, {
@@ -67,8 +71,13 @@ initLogger({
   env: { service: "freenary-server" },
 });
 
-// SAFETY: auth is created by better-auth which satisfies BetterAuthInstance; cast needed for evlog middleware typing
-const identifyUser = createAuthMiddleware(auth as BetterAuthInstance, {
+const sessionResolvedOncePerRequest = {
+  api: {
+    getSession: ({ headers }: { headers: Headers }) => requestSession(headers),
+  },
+};
+
+const identifyUser = createAuthMiddleware(sessionResolvedOncePerRequest, {
   exclude: ["/api/auth/**"],
   maskEmail: true,
 });
@@ -87,7 +96,7 @@ new Elysia()
   })
   .use(
     cors({
-      allowedHeaders: ["Content-Type", "Authorization"],
+      allowedHeaders: ["Content-Type", "Authorization", "X-CSRF-Token"],
       credentials: true,
       methods: ["GET", "POST", "OPTIONS"],
       origin: env.CORS_ORIGIN,
@@ -130,6 +139,16 @@ new Elysia()
   .all(
     "/api-reference*",
     async (context) => {
+      if (
+        context.request.method === "POST" &&
+        !isJsonRequest(context.request)
+      ) {
+        return copyResponseStatusOntoWideEvent(
+          context.set,
+          new Response("unsupported_media_type", { status: 415 })
+        );
+      }
+
       const { pathname, search } = new URL(context.request.url);
       const publicRequest = new Request(
         new URL(`${pathname}${search}`, env.BETTER_AUTH_URL).href,
@@ -155,6 +174,19 @@ new Elysia()
   .listen(env.PORT, () => {
     console.log(`Server is running on ${env.BETTER_AUTH_URL}`);
   });
+
+updateCheck.start();
+
+if (
+  process.env.NODE_ENV === "production" &&
+  (env.TRUSTED_PROXIES ?? []).length === 0
+) {
+  console.warn(
+    "TRUSTED_PROXIES is not set. If a reverse proxy sits in front of the web app, every visitor counts as the proxy's address and shares one sign-in rate limit: set TRUSTED_PROXIES to the proxy's address or range."
+  );
+}
+
+await sealLegacyProviderTokens();
 
 const setupState = await Effect.runPromise(readSetupState());
 

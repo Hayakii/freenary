@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import type { EBTransaction } from "./client";
-import { mapEBTransactions } from "./map-transaction";
+import { mapEBTransactions, parseMinorUnits } from "./map-transaction";
 
 const transaction = (transactionId: string): EBTransaction => ({
   booking_date: "2026-08-27",
@@ -13,7 +13,37 @@ const transaction = (transactionId: string): EBTransaction => ({
   transaction_id: transactionId,
 });
 
+describe("parseMinorUnits", () => {
+  test("keeps the sign of a signed amount with no indicator", () => {
+    expect(parseMinorUnits("-12.50")).toBe(-1250);
+  });
+
+  test("lets a leading minus win over the indicator", () => {
+    expect(parseMinorUnits("-12.50", "DBIT")).toBe(-1250);
+    expect(parseMinorUnits("-12.50", "CRDT")).toBe(-1250);
+  });
+
+  test("takes the sign from the indicator when the amount is unsigned", () => {
+    expect(parseMinorUnits("12.50", "DBIT")).toBe(-1250);
+    expect(parseMinorUnits("12.50", "CRDT")).toBe(1250);
+  });
+});
+
 describe("mapEBTransactions", () => {
+  test("keeps a negative balance after the transaction negative", () => {
+    const [mapped] = mapEBTransactions(
+      [
+        {
+          ...transaction("overdrawn"),
+          balance_after_transaction: { amount: "-80.00", currency: "EUR" },
+        },
+      ],
+      "2026-01-01"
+    );
+
+    expect(mapped?.balanceAfterMinor).toBe(-8000);
+  });
+
   test("maps the top-level creditor agent", () => {
     const [mapped] = mapEBTransactions(
       [transaction("volatile-id")],
@@ -30,6 +60,46 @@ describe("mapEBTransactions", () => {
     );
 
     expect(mapped?.providerTransactionId).toBe("entry-123");
+  });
+
+  test("dates a transaction with no booking date on its transaction date", () => {
+    const [mapped] = mapEBTransactions(
+      [
+        {
+          ...transaction("pending"),
+          booking_date: undefined,
+          transaction_date: "2026-08-25",
+          value_date: "2026-08-26",
+        },
+      ],
+      "2026-08-27"
+    );
+
+    expect(mapped?.bookingDate).toBe("2026-08-25");
+  });
+
+  test("dates a transaction with no booking or transaction date on its value date", () => {
+    const [mapped] = mapEBTransactions(
+      [
+        {
+          ...transaction("pending"),
+          booking_date: undefined,
+          value_date: "2026-08-26",
+        },
+      ],
+      "2026-08-27"
+    );
+
+    expect(mapped?.bookingDate).toBe("2026-08-26");
+  });
+
+  test("dates a transaction with no bank date on the fallback date", () => {
+    const [mapped] = mapEBTransactions(
+      [{ ...transaction("pending"), booking_date: undefined }],
+      "2026-08-27"
+    );
+
+    expect(mapped?.bookingDate).toBe("2026-08-27");
   });
 
   test("does not include transaction_id in a derived identity", () => {

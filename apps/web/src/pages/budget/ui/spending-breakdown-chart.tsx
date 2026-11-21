@@ -1,6 +1,7 @@
 import type { SpendingCategory } from "@freenary/api/lib/taxonomy";
-import { ChartContainer, ChartTooltip } from "@freenary/ui/components/chart";
-import type { ChartConfig } from "@freenary/ui/components/chart";
+import { PieChart } from "@freenary/ui/components/charts/pie-chart";
+import type { PieData } from "@freenary/ui/components/charts/pie-context";
+import { PieSlice } from "@freenary/ui/components/charts/pie-slice";
 import { FluidHoverHighlight } from "@freenary/ui/components/fluid-hover-highlight";
 import { ScrollArea } from "@freenary/ui/components/scroll-area";
 import {
@@ -9,20 +10,14 @@ import {
 } from "@freenary/ui/hooks/use-fluid-hover";
 import { cn } from "@freenary/ui/lib/utils";
 import { motion } from "motion/react";
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { Cell, Pie, PieChart } from "recharts";
-import type { PieSectorDataItem } from "recharts";
 
 import type { CategorySelection } from "@/entities/category";
-import { categoryLabel } from "@/entities/category";
+import { categoryChartColor, categoryLabel } from "@/entities/category";
 import { m } from "@/paraglide/messages.js";
-import {
-  CHART_COLOR_VARS,
-  categoryChartColor,
-} from "@/shared/lib/chart-colors";
+import { CHART_COLOR_VARS } from "@/shared/lib/chart-colors";
 import { formatCurrency } from "@/shared/lib/format-currency";
-import { ChartTooltipCard } from "@/shared/ui/chart-tooltip";
 
 import {
   breakdownSlices,
@@ -37,11 +32,19 @@ import { PRESS_MOTION } from "./list-controls";
 
 interface SpendingBreakdownChartProps {
   activeCategories: SpendingCategory[];
-  data: CategoryAmount[];
+  categories: CategoryAmount[];
+  currency: string;
   onSelect?: (selection: CategorySelection | null) => void;
 }
 
-const UNSELECTED_OPACITY = 0.3;
+interface SliceStyle {
+  color: string;
+  label: string;
+}
+
+const PIE_SIZE = 176;
+const PIE_INNER_RADIUS = 44;
+const UNSELECTED_SHARE = "30%";
 const OTHER_SLICE_KEY = "other";
 const OTHER_SLICE_COLOR = `color-mix(in oklab, ${CHART_COLOR_VARS.grey} 35%, var(--foreground))`;
 
@@ -70,81 +73,67 @@ const sliceSelection = (slice: BreakdownSlice): CategorySelection =>
     ? { categories: sliceCategories(slice), kind: "categories" }
     : { category: slice.category, kind: "category" };
 
-const buildConfigKeyedByCategorySlug = (
-  slices: BreakdownSlice[]
-): ChartConfig => {
-  const config: ChartConfig = {};
+const sliceStyle = (slice: BreakdownSlice): SliceStyle =>
+  slice.kind === "other"
+    ? {
+        color: OTHER_SLICE_COLOR,
+        label: m.budget_breakdown_other({ count: slice.categories.length }),
+      }
+    : {
+        color: categoryChartColor(slice.category),
+        label: categoryLabel(slice.category),
+      };
 
-  for (const slice of slices) {
-    config[sliceKey(slice)] =
-      slice.kind === "other"
-        ? {
-            color: OTHER_SLICE_COLOR,
-            label: m.budget_breakdown_other({ count: slice.categories.length }),
-          }
-        : {
-            color: categoryChartColor(slice.category),
-            label: categoryLabel(slice.category),
-          };
-  }
+const unselectedColor = (color: string): string =>
+  `color-mix(in oklab, ${color} ${UNSELECTED_SHARE}, transparent)`;
 
-  return config;
-};
+const sharePercent = (amount: number, total: number): number =>
+  total > 0 ? Math.round((amount / total) * 100) : 0;
 
-const SpendingBreakdownTooltip = ({
-  active,
-  config,
-  payload,
+const BreakdownCenter = ({
+  currency,
+  hovered,
   total,
 }: {
-  active?: boolean;
-  config: ChartConfig;
-  payload?: { payload?: BreakdownSlice }[];
+  currency: string;
+  hovered: { amount: number; style: SliceStyle } | undefined;
   total: number;
-}) => {
-  const slice = active ? payload?.[0]?.payload : undefined;
-
-  if (!slice) {
-    return null;
-  }
-
-  const key = sliceKey(slice);
-  const share = total > 0 ? Math.round((slice.amount / total) * 100) : 0;
-
-  return (
-    <ChartTooltipCard className="min-w-32">
-      <div className="flex flex-1 items-center justify-between gap-3 leading-none">
-        <span className="flex items-center gap-1.5">
-          <span
-            className="size-2.5 shrink-0 rounded-[2px]"
-            style={{ backgroundColor: config[key]?.color }}
-          />
-          <span className="text-muted-foreground whitespace-nowrap">
-            {config[key]?.label ?? key}
-          </span>
-        </span>
-        <span className="text-foreground font-mono font-medium tabular-nums">
-          {formatCurrency(slice.amount)} ({share}%)
-        </span>
-      </div>
-    </ChartTooltipCard>
-  );
-};
+}) => (
+  <div
+    aria-hidden="true"
+    className="pointer-events-none absolute inset-0 flex items-center justify-center"
+  >
+    <div className="flex max-w-20 flex-col items-center gap-0.5 text-center">
+      <span className="text-foreground font-mono text-[11px] font-medium tabular-nums">
+        {formatCurrency(hovered?.amount ?? total, currency)}
+      </span>
+      <span className="text-muted-foreground max-w-full truncate text-[10px] leading-tight">
+        {hovered
+          ? `${hovered.style.label} · ${sharePercent(hovered.amount, total)}%`
+          : m.chart_total()}
+      </span>
+    </div>
+  </div>
+);
 
 const LegendChip = ({
   amount,
   color,
+  currency,
   index,
   isSelected,
   label,
+  onHoverChange,
   onToggle,
   registerItem,
 }: {
   amount: number;
   color: string | undefined;
+  currency: string;
   index: number;
   isSelected: boolean;
   label: ReactNode;
+  onHoverChange?: (hovered: boolean) => void;
   onToggle: (() => void) | undefined;
   registerItem: (index: number, element: HTMLElement | null) => void;
 }) => {
@@ -162,7 +151,11 @@ const LegendChip = ({
           isSelected ? "text-foreground" : "text-muted-foreground"
         )}
         disabled={!onToggle}
+        onBlur={() => onHoverChange?.(false)}
         onClick={onToggle}
+        onFocus={() => onHoverChange?.(true)}
+        onPointerEnter={() => onHoverChange?.(true)}
+        onPointerLeave={() => onHoverChange?.(false)}
         ref={ref}
         type="button"
       >
@@ -171,7 +164,9 @@ const LegendChip = ({
           style={{ backgroundColor: color }}
         />
         <span>{label}</span>
-        <span className="text-foreground">{formatCurrency(amount)}</span>
+        <span className="text-foreground">
+          {formatCurrency(amount, currency)}
+        </span>
       </motion.button>
     </li>
   );
@@ -179,14 +174,16 @@ const LegendChip = ({
 
 export const SpendingBreakdownChart = ({
   activeCategories,
-  data: categories,
+  categories,
+  currency,
   onSelect,
 }: SpendingBreakdownChartProps) => {
   const slices = useMemo(() => breakdownSlices(categories), [categories]);
-  const config = buildConfigKeyedByCategorySlug(slices);
+  const styles = useMemo(() => slices.map(sliceStyle), [slices]);
+  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
 
   const legendRef = useRef<HTMLUListElement>(null);
-  const legendHover = useFluidHover(legendRef, { axis: "xy" });
+  const legendHover = useFluidHover(legendRef, { axis: "xy", nearest: true });
 
   const total = categories.reduce((sum, entry) => sum + entry.amount, 0);
   const isSelected = (slice: BreakdownSlice) =>
@@ -208,15 +205,20 @@ export const SpendingBreakdownChart = ({
     }
   }, [isOtherOpen]);
 
-  const selectSlice = useCallback(
-    (_sector: PieSectorDataItem, index: number) => {
-      const slice = slices[index];
+  const pieData = useMemo(
+    (): PieData[] =>
+      slices.map((slice, index) => {
+        const color = styles[index]?.color ?? OTHER_SLICE_COLOR;
+        const dimmed =
+          hasSelection && !isSliceSelected(slice, activeCategories);
 
-      if (slice) {
-        onSelect?.(sliceSelection(slice));
-      }
-    },
-    [onSelect, slices]
+        return {
+          color: dimmed ? unselectedColor(color) : color,
+          label: styles[index]?.label ?? sliceKey(slice),
+          value: slice.amount,
+        };
+      }),
+    [activeCategories, hasSelection, slices, styles]
   );
 
   if (slices.length === 0) {
@@ -227,38 +229,46 @@ export const SpendingBreakdownChart = ({
     );
   }
 
+  const hoveredSlice = hoveredIndex === null ? undefined : slices[hoveredIndex];
+  const hoveredStyle = hoveredIndex === null ? undefined : styles[hoveredIndex];
+
   return (
     <div className="flex h-full flex-col gap-3">
-      <ChartContainer
-        config={config}
-        className="mx-auto aspect-square h-auto w-full max-w-[176px] shrink-0"
-      >
-        <PieChart>
-          <ChartTooltip
-            content={<SpendingBreakdownTooltip config={config} total={total} />}
-          />
-          <Pie
-            data={slices}
-            isAnimationActive={false}
-            dataKey="amount"
-            nameKey="kind"
-            innerRadius="55%"
-            outerRadius="100%"
-            className={onSelect ? "cursor-pointer" : undefined}
-            onClick={onSelect ? selectSlice : undefined}
-          >
-            {slices.map((slice) => (
-              <Cell
+      <div className="relative mx-auto shrink-0">
+        <PieChart
+          data={pieData}
+          hoveredIndex={hoveredIndex}
+          innerRadius={PIE_INNER_RADIUS}
+          onHoverChange={setHoveredIndex}
+          size={PIE_SIZE}
+        >
+          {slices.map((slice, index) =>
+            onSelect ? (
+              <g
                 key={sliceKey(slice)}
-                fill={config[sliceKey(slice)]?.color}
-                fillOpacity={
-                  hasSelection && !isSelected(slice) ? UNSELECTED_OPACITY : 1
-                }
+                onClick={() => onSelect(sliceSelection(slice))}
+              >
+                <PieSlice hoverEffect="grow" index={index} />
+              </g>
+            ) : (
+              <PieSlice
+                hoverEffect="grow"
+                index={index}
+                key={sliceKey(slice)}
               />
-            ))}
-          </Pie>
+            )
+          )}
         </PieChart>
-      </ChartContainer>
+        <BreakdownCenter
+          currency={currency}
+          hovered={
+            hoveredSlice && hoveredStyle
+              ? { amount: hoveredSlice.amount, style: hoveredStyle }
+              : undefined
+          }
+          total={total}
+        />
+      </div>
       <ScrollArea className="min-h-0 flex-1">
         <ul
           className="relative flex flex-wrap content-start gap-x-4 gap-y-1.5 px-1"
@@ -273,11 +283,15 @@ export const SpendingBreakdownChart = ({
           {slices.map((slice, index) => (
             <LegendChip
               amount={slice.amount}
-              color={config[sliceKey(slice)]?.color}
+              color={styles[index]?.color}
+              currency={currency}
               index={index}
               isSelected={isSelected(slice)}
               key={sliceKey(slice)}
-              label={config[sliceKey(slice)]?.label ?? sliceKey(slice)}
+              label={styles[index]?.label ?? sliceKey(slice)}
+              onHoverChange={(hovered) =>
+                setHoveredIndex(hovered ? index : null)
+              }
               onToggle={
                 onSelect ? () => onSelect(sliceSelection(slice)) : undefined
               }
@@ -294,6 +308,7 @@ export const SpendingBreakdownChart = ({
                   <LegendChip
                     amount={entry.amount}
                     color={categoryChartColor(entry.category)}
+                    currency={currency}
                     index={slices.length + place}
                     isSelected={activeCategories.includes(entry.category)}
                     key={entry.category}

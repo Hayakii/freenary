@@ -35,6 +35,7 @@ import {
   REAUTH_WINDOW_SECONDS,
   SESSION_EXPIRY_SECONDS,
   TRUSTED_DEVICE_SECONDS,
+  USER_ADDITIONAL_FIELDS,
 } from "./policy";
 import {
   appleTrustedOrigins,
@@ -146,7 +147,6 @@ export const createAuth = () => {
           ? undefined
           : { domain: env.AUTH_COOKIE_DOMAIN, enabled: true },
       defaultCookieAttributes: cookiePolicy,
-      ipAddress: { trustedProxies: env.TRUSTED_PROXIES },
     },
 
     appName: APP_NAME,
@@ -222,21 +222,30 @@ export const createAuth = () => {
     trustedOrigins: [env.CORS_ORIGIN, ...appleTrustedOrigins],
 
     user: {
-      additionalFields: {
-        onboardingCompletedAt: {
-          required: false,
-          type: "date",
-        },
-        taxCountries: {
-          required: false,
-          type: "string[]",
-        },
-      },
+      additionalFields: USER_ADDITIONAL_FIELDS,
     },
   });
 };
 
 export const auth = createAuth();
+
+type RequestSession = ReturnType<typeof auth.api.getSession>;
+
+const sessionsByRequestHeaders = new WeakMap<Headers, RequestSession>();
+
+export const requestSession = (headers: Headers): RequestSession => {
+  const known = sessionsByRequestHeaders.get(headers);
+
+  if (known) {
+    return known;
+  }
+
+  const resolving = auth.api.getSession({ headers });
+
+  sessionsByRequestHeaders.set(headers, resolving);
+
+  return resolving;
+};
 
 export type { AuthCapabilities, OAuthProviderDescriptor } from "./providers";
 export { authCapabilities } from "./providers";

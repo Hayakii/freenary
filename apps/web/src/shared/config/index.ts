@@ -1,4 +1,4 @@
-export { docsUrl } from "./docs";
+export { docsUrl, releaseNotesUrl, updateGuideUrl } from "./docs";
 export { GITHUB_REPO_URL } from "./links";
 export {
   getInternalServerUrl,
@@ -11,3 +11,4 @@ export {
   settingsSectionOf,
 } from "./settings-sections";
 export type { SettingsSection } from "./settings-sections";
+export { getTrustedProxies } from "./trusted-proxies";

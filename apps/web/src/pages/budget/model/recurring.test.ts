@@ -1,5 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
+import type { RecurringData, RecurringItem } from "@/entities/recurring";
+
 import {
   annualCostMinor,
   forecastSeries,
@@ -8,9 +10,8 @@ import {
   recurringSections,
   recurringSummary,
   recurringTrend,
-  upcomingPayments,
 } from "./recurring";
-import type { RecurringData, RecurringItem, RecurringMonth } from "./recurring";
+import type { RecurringMonth } from "./recurring";
 
 const item = (overrides: Partial<RecurringItem> = {}): RecurringItem => ({
   amountSpread: 0,
@@ -70,74 +71,6 @@ describe("cost of a cadence", () => {
 
     expect(monthlyEquivalentMinor(broken)).toBe(0);
     expect(annualCostMinor(broken)).toBe(0);
-  });
-});
-
-describe("upcomingPayments", () => {
-  const asOf = new Date(2026, 8, 8);
-
-  it("rolls a next date already behind today onto its next slot rather than reporting it as due now", () => {
-    const staleNextExpected = item({
-      nextExpected: new Date(2026, 7, 3).toISOString(),
-    });
-
-    const [first] = upcomingPayments([staleNextExpected], asOf);
-
-    expect(first?.date).toEqual(new Date(2026, 9, 2));
-    expect(first?.daysAway).toBe(24);
-  });
-
-  it("counts a payment due today as zero days away", () => {
-    const today = item({ nextExpected: new Date(2026, 8, 8).toISOString() });
-
-    expect(upcomingPayments([today], asOf)[0]?.daysAway).toBe(0);
-  });
-
-  it("emits every occurrence a weekly cadence fits in the horizon", () => {
-    const weekly = item({
-      frequency: "weekly",
-      intervalDays: 7,
-      nextExpected: new Date(2026, 8, 9).toISOString(),
-    });
-
-    expect(upcomingPayments([weekly], asOf, 30).map((p) => p.daysAway)).toEqual(
-      [1, 8, 15, 22, 29]
-    );
-  });
-
-  it("excludes an occurrence past the horizon and keeps one on it", () => {
-    const onEdge = item({ nextExpected: new Date(2026, 9, 8).toISOString() });
-    const beyond = item({
-      merchantKey: "gym",
-      nextExpected: new Date(2026, 9, 9).toISOString(),
-    });
-
-    expect(upcomingPayments([onEdge, beyond], asOf, 30)).toHaveLength(1);
-  });
-
-  it("orders occurrences from several patterns by date", () => {
-    const later = item({ nextExpected: new Date(2026, 8, 20).toISOString() });
-    const sooner = item({
-      merchantKey: "rent",
-      merchantName: "Landlord",
-      nextExpected: new Date(2026, 8, 10).toISOString(),
-    });
-
-    expect(upcomingPayments([later, sooner], asOf).map((p) => p.label)).toEqual(
-      ["Landlord", "Netflix"]
-    );
-  });
-
-  it("drops an occurrence whose cadence exhausts the projection cap before reaching today", () => {
-    const stalledAYearBackOnAFiveDayCadence = item({
-      frequency: "weekly",
-      intervalDays: 5,
-      nextExpected: new Date(2025, 8, 15).toISOString(),
-    });
-
-    expect(upcomingPayments([stalledAYearBackOnAFiveDayCadence], asOf)).toEqual(
-      []
-    );
   });
 });
 

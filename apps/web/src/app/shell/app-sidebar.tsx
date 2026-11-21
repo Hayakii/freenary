@@ -1,8 +1,4 @@
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@freenary/ui/components/collapsible";
+import { CommandMenuShortcut } from "@freenary/ui/components/command-menu";
 import {
   Sidebar,
   SidebarContent,
@@ -12,158 +8,152 @@ import {
   SidebarGroupLabel,
   SidebarHeader,
   SidebarMenu,
-  SidebarMenuBadge,
   SidebarMenuButton,
   SidebarMenuItem,
-  SidebarMenuSub,
-  SidebarMenuSubButton,
-  SidebarMenuSubItem,
+  SidebarMenuSkeleton,
 } from "@freenary/ui/components/sidebar";
-import { spring } from "@freenary/ui/lib/springs";
-import { RiArrowRightSLine } from "@remixicon/react";
+import { RiSearchLine } from "@remixicon/react";
+import { useQuery } from "@tanstack/react-query";
 import { Link, useLocation } from "@tanstack/react-router";
-import { motion } from "motion/react";
-import { useState } from "react";
+import { LayoutDashboard, LayoutDashboardPlus } from "kubai-icons-react";
+import { useRef } from "react";
 
+import {
+  dashboardsQueryOptions,
+  useDashboardUpdates,
+} from "@/entities/dashboard";
 import { m } from "@/paraglide/messages.js";
-import { remixIcon } from "@/shared/lib/remix-icon";
+import { CHART_COLOR_VARS } from "@/shared/lib/chart-colors";
+import { kubaiIcon } from "@/shared/lib/kubai-icon";
+import { AiUpdateScope } from "@/shared/ui/ai-update-scope";
+import type { AiUpdateScopeHandle } from "@/shared/ui/ai-update-scope";
 
-import { isNavArea, NAV_ITEMS } from "./nav-items";
-import type { NavAreaEntry } from "./nav-items";
+import { setCommandMenuOpen } from "./command-menu-state";
+import { isCurrentNav, NAV_ITEMS } from "./nav-items";
+import type { NavEntry } from "./nav-items";
 import { SidebarBrand } from "./sidebar-brand";
 import { SidebarFirstSteps } from "./sidebar-first-steps";
 import { SidebarUserMenu } from "./sidebar-user-menu";
 
-type NavEntry = (typeof NAV_ITEMS)[number];
+const DASHBOARD_SKELETON_ROWS = 3;
 
-const PLANNED_DIMMED_CLASS =
-  "text-sidebar-foreground/40 hover:text-sidebar-foreground/50";
+const DashboardIcon = kubaiIcon(LayoutDashboard, CHART_COLOR_VARS.grey);
 
-const CHEVRON_CLASS = "text-sidebar-foreground/50 ml-auto flex shrink-0";
-
-const SUB_LIST_VARIANTS = {
-  closed: {},
-  open: { transition: { staggerChildren: 0.06 } },
-} as const;
-
-const SUB_ROW_VARIANTS = {
-  closed: { opacity: 0, transition: spring.moderate.exit, y: -4 },
-  open: { opacity: 1, transition: spring.moderate, y: 0 },
-} as const;
-
-const MotionSidebarMenuSubItem = motion.create(SidebarMenuSubItem);
-
-const isCurrent = (pathname: string, to: string) =>
-  to === "/"
-    ? pathname === to
-    : pathname === to || pathname.startsWith(`${to}/`);
+const NewDashboardIcon = kubaiIcon(LayoutDashboardPlus, CHART_COLOR_VARS.pink);
 
 const NavRow = ({ item, pathname }: { item: NavEntry; pathname: string }) => (
   <SidebarMenuItem>
     <SidebarMenuButton
-      className={item.planned ? PLANNED_DIMMED_CLASS : undefined}
-      icon={remixIcon(item.icon)}
-      isActive={isCurrent(pathname, item.to)}
+      icon={kubaiIcon(item.icon, item.color)}
+      isActive={isCurrentNav(pathname, item.to)}
       render={<Link to={item.to} />}
     >
       {item.label()}
     </SidebarMenuButton>
-    {item.planned && (
-      <SidebarMenuBadge className="text-muted-foreground/60">
-        {m.shell_nav_planned_badge()}
-      </SidebarMenuBadge>
-    )}
   </SidebarMenuItem>
 );
 
-const NavAreaDisclosure = ({
-  item,
-  pathname,
-}: {
-  item: NavAreaEntry;
-  pathname: string;
-}) => {
-  const title = item.label();
-  const isAreaCurrent = isCurrent(pathname, item.to);
-  const [open, setOpen] = useState(isAreaCurrent);
+const SearchTrigger = () => (
+  <button
+    className="border-input bg-background text-muted-foreground hover:bg-accent focus-visible:ring-ring/50 flex h-8 w-full items-center gap-2 rounded-md border ps-2.5 pe-1.5 text-sm outline-none focus-visible:ring-[3px]"
+    onClick={() => setCommandMenuOpen(true)}
+    type="button"
+  >
+    <RiSearchLine aria-hidden="true" className="size-4 shrink-0" />
+    <span className="min-w-0 flex-1 truncate text-start">
+      {m.command_menu_trigger()}
+    </span>
+    <CommandMenuShortcut keys="mod+k" />
+  </button>
+);
+
+const DashboardsGroup = ({ pathname }: { pathname: string }) => {
+  const dashboards = useQuery(dashboardsQueryOptions());
+  const updateScope = useRef<AiUpdateScopeHandle>(null);
+
+  useDashboardUpdates(({ refresh }) => {
+    updateScope.current?.play({ change: refresh });
+  });
 
   return (
-    <Collapsible
-      onOpenChange={setOpen}
-      open={open}
-      render={<SidebarMenuItem />}
-    >
-      <SidebarMenuButton
-        icon={remixIcon(item.icon)}
-        isActive={isAreaCurrent && !open}
-        render={<CollapsibleTrigger />}
-      >
-        {title}
-        <motion.span
-          animate={{ rotate: open ? 90 : 0 }}
-          aria-hidden="true"
-          className={CHEVRON_CLASS}
-          initial={false}
-          transition={spring.fast}
-        >
-          <RiArrowRightSLine className="size-3.5" />
-        </motion.span>
-      </SidebarMenuButton>
-      <CollapsibleContent>
-        <motion.div
-          animate={open ? "open" : "closed"}
-          initial="closed"
-          variants={SUB_LIST_VARIANTS}
-        >
-          <SidebarMenuSub>
-            {item.children.map((page) => (
-              <MotionSidebarMenuSubItem
-                key={page.to}
-                variants={SUB_ROW_VARIANTS}
-              >
-                <SidebarMenuSubButton
-                  isActive={isCurrent(pathname, page.to)}
-                  render={<Link to={page.to} />}
+    <SidebarGroup>
+      <SidebarGroupLabel className="text-muted-foreground">
+        {m.nav_dashboards()}
+      </SidebarGroupLabel>
+      <SidebarGroupContent>
+        <AiUpdateScope ref={updateScope} size="element">
+          <SidebarMenu>
+            {dashboards.isPending &&
+              Array.from({ length: DASHBOARD_SKELETON_ROWS }, (_, index) => (
+                <SidebarMenuItem key={index}>
+                  <SidebarMenuSkeleton showIcon />
+                </SidebarMenuItem>
+              ))}
+            {dashboards.data?.dashboards.map((dashboard) => (
+              <SidebarMenuItem key={dashboard.id}>
+                <SidebarMenuButton
+                  icon={DashboardIcon}
+                  isActive={pathname === `/dashboards/${dashboard.id}`}
+                  render={
+                    <Link
+                      params={{ dashboardId: dashboard.id }}
+                      title={dashboard.title}
+                      to="/dashboards/$dashboardId"
+                    />
+                  }
                 >
-                  {page.label()}
-                </SidebarMenuSubButton>
-              </MotionSidebarMenuSubItem>
+                  {dashboard.title}
+                </SidebarMenuButton>
+              </SidebarMenuItem>
             ))}
-          </SidebarMenuSub>
-        </motion.div>
-      </CollapsibleContent>
-    </Collapsible>
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                icon={NewDashboardIcon}
+                render={
+                  <Link
+                    search={{ draft: m.dashboards_new_prompt() }}
+                    to="/ask"
+                  />
+                }
+              >
+                {m.nav_new_dashboard()}
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          </SidebarMenu>
+        </AiUpdateScope>
+      </SidebarGroupContent>
+    </SidebarGroup>
   );
 };
+
+const RAIL_BELOW_THE_BANNER =
+  "top-[var(--update-banner-height,0px)] h-[calc(100svh-var(--update-banner-height,0px))]";
 
 export const AppSidebar = () => {
   const pathname = useLocation({ select: (location) => location.pathname });
 
   return (
-    <Sidebar collapsible="offcanvas" variant="floating">
-      <SidebarHeader>
+    <Sidebar
+      className={RAIL_BELOW_THE_BANNER}
+      collapsible="offcanvas"
+      variant="floating"
+    >
+      <SidebarHeader className="gap-2">
         <SidebarBrand />
+        <SearchTrigger />
       </SidebarHeader>
 
       <SidebarContent>
         <SidebarGroup>
-          <SidebarGroupLabel>{m.nav_group_application()}</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
-              {NAV_ITEMS.map((item) =>
-                isNavArea(item) ? (
-                  <NavAreaDisclosure
-                    item={item}
-                    key={item.to}
-                    pathname={pathname}
-                  />
-                ) : (
-                  <NavRow item={item} key={item.to} pathname={pathname} />
-                )
-              )}
+              {NAV_ITEMS.map((item) => (
+                <NavRow item={item} key={item.to} pathname={pathname} />
+              ))}
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
+        <DashboardsGroup pathname={pathname} />
       </SidebarContent>
 
       <SidebarFooter>

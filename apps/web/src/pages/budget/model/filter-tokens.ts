@@ -15,6 +15,7 @@ import { m } from "@/paraglide/messages.js";
 import { formatCurrency } from "@/shared/lib/format-currency";
 
 export const FILTER_FIELD_LABELS = {
+  account: m.budget_filter_field_account,
   amount: m.budget_filter_field_amount,
   category: m.budget_filter_field_category,
   company: m.budget_filter_field_company,
@@ -53,22 +54,38 @@ export const filterValueList = (
 ): string =>
   new Intl.ListFormat(locale, { type: "disjunction" }).format(labels);
 
+export type AccountNameOf = (accountId: string) => string;
+
+const accountIdAsName: AccountNameOf = (accountId) => accountId;
+
+export const filterValueLabels = (
+  filter: Exclude<TransactionFilter, { field: "amount" }>,
+  accountName: AccountNameOf
+): string[] => {
+  if (filter.field === "category") {
+    return filter.values.map(categoryValueLabel);
+  }
+
+  return filter.field === "account"
+    ? filter.values.map(accountName)
+    : filter.values;
+};
+
 export const filterTokenText = (
   filter: TransactionFilter,
-  locale: string
+  locale: string,
+  currency: string,
+  accountName: AccountNameOf = accountIdAsName
 ): FilterTokenText => {
   if (filter.field === "amount") {
     return {
       field: FILTER_FIELD_LABELS.amount(),
       operator: AMOUNT_OPERATOR_SYMBOLS[filter.operator](),
-      value: formatCurrency(filter.value),
+      value: formatCurrency(filter.value, currency),
     };
   }
 
-  const labels =
-    filter.field === "category"
-      ? filter.values.map(categoryValueLabel)
-      : filter.values;
+  const labels = filterValueLabels(filter, accountName);
 
   return {
     field: FILTER_FIELD_LABELS[filter.field](),
@@ -77,11 +94,31 @@ export const filterTokenText = (
   };
 };
 
+export const chipValue = (
+  operator: ListFilterOperator | null,
+  text: Pick<FilterTokenText, "operator" | "value">
+): string =>
+  operator === "is" ? text.value : `${text.operator} ${text.value}`.trim();
+
+export const filterChipValue = (
+  filter: TransactionFilter,
+  text: FilterTokenText
+): string =>
+  chipValue(filter.field === "amount" ? null : filter.operator, text);
+
 export const filterTokenSentence = (
   filter: TransactionFilter,
-  locale: string
+  locale: string,
+  currency: string,
+  accountName: AccountNameOf = accountIdAsName
 ): string => {
-  const { field, value } = filterTokenText(filter, locale);
+  const { field, value } = filterTokenText(
+    filter,
+    locale,
+    currency,
+    accountName
+  );
+
   const operator =
     filter.field === "amount"
       ? AMOUNT_OPERATOR_LABELS[filter.operator]()

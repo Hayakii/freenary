@@ -112,3 +112,24 @@
     font-variant-numeric: tabular-nums;
   }
 }
+
+/* From md the update banner is sticky, so the browser scrolls a focused or
+   targeted element clear of it instead of leaving it under the bar. */
+@media (width >= 48rem) {
+  html {
+    scroll-padding-top: var(--update-banner-height, 0px);
+  }
+}
+
+/* Below md the phone tab bar is fixed to the bottom edge, so toasts and the
+   unsaved-changes bar rise above it rather than cover its middle tabs. */
+:root {
+  --bottom-tab-bar-height: 3.5rem;
+}
+
+@media (width < 48rem) {
+  body:has([data-slot="bottom-tab-bar"])
+    [data-sonner-toaster][data-y-position="bottom"] {
+    bottom: calc(var(--bottom-tab-bar-height) + 1rem);
+  }
+}

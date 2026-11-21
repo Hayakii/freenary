@@ -1,10 +1,20 @@
+import { randomUUID } from "node:crypto";
+
 import prisma from "@freenary/db";
 import { env } from "@freenary/env/server";
 import { ORPCError } from "@orpc/server";
-import { Effect, Option } from "effect";
+import { Data, Effect, Option } from "effect";
 import { z } from "zod";
 
 import { protectedProcedure } from "../index";
+import type { BankConnectionState } from "../lib/bank-connection-state";
+import {
+  BANK_CONNECTION_RETURN_TARGETS,
+  encodeBankConnectionState,
+  findInstitution,
+  parseBankConnectionState,
+  verifyBankConnectionState,
+} from "../lib/bank-connection-state";
 import {
   findProviderUser,
   ensureProviderUser,
@@ -16,20 +26,24 @@ import {
 } from "../lib/country-code";
 import { getDefaultProvider, getProvider } from "../providers/registry";
 import type { BankingProvider, ProviderInstitution } from "../providers/types";
-import type { BankConnectionState } from "./bank-connection-state";
-import {
-  BANK_CONNECTION_RETURN_TARGETS,
-  encodeBankConnectionState,
-  findInstitution,
-  parseBankConnectionState,
-  verifyBankConnectionState,
-} from "./bank-connection-state";
+import { startAccountSync } from "./budget";
+
+class FirstSyncNotStarted extends Data.TaggedError("FirstSyncNotStarted")<{
+  readonly cause: unknown;
+}> {}
 
 const providerById = Option.liftThrowable(getProvider);
 
 const decodeConnectionState = Option.liftThrowable(parseBankConnectionState);
 
 const LIST_INSTITUTIONS_CONCURRENCY = 3;
+
+const BANK_CONNECTION_STATE_IDENTIFIER = "bank-connection-state";
+const BANK_CONNECTION_STATE_TTL_MS = 60 * 60 * 1000;
+
+const MAX_CALLBACK_PARAMS = 20;
+const MAX_CALLBACK_PARAM_KEY_LENGTH = 100;
+const MAX_CALLBACK_PARAM_VALUE_LENGTH = 4096;
 
 const resolveProvider = (providerId: string): BankingProvider =>
   Option.getOrThrowWith(
@@ -65,6 +79,50 @@ const readConnectionState = (
   }
 
   return connectionState;
+};
+
+const issueStateNonce = async (userId: string): Promise<string> => {
+  const now = new Date();
+  const nonce = randomUUID();
+
+  await prisma.$transaction([
+    prisma.verification.deleteMany({
+      where: {
+        expiresAt: { lte: now },
+        identifier: BANK_CONNECTION_STATE_IDENTIFIER,
+      },
+    }),
+    prisma.verification.create({
+      data: {
+        expiresAt: new Date(now.getTime() + BANK_CONNECTION_STATE_TTL_MS),
+        id: nonce,
+        identifier: BANK_CONNECTION_STATE_IDENTIFIER,
+        value: userId,
+      },
+    }),
+  ]);
+
+  return nonce;
+};
+
+const consumeStateNonce = async (
+  nonce: string,
+  userId: string
+): Promise<void> => {
+  const { count } = await prisma.verification.deleteMany({
+    where: {
+      expiresAt: { gt: new Date() },
+      id: nonce,
+      identifier: BANK_CONNECTION_STATE_IDENTIFIER,
+      value: userId,
+    },
+  });
+
+  if (count === 0) {
+    throw new ORPCError("BAD_REQUEST", {
+      message: "Bank connection state has expired or was already used",
+    });
+  }
 };
 
 const requireInstitutionsOf = async (
@@ -142,7 +200,15 @@ export const bankConnectionRouter = {
   exchangeCode: protectedProcedure
     .input(
       z.object({
-        params: z.record(z.string(), z.string()),
+        params: z
+          .record(
+            z.string().max(MAX_CALLBACK_PARAM_KEY_LENGTH),
+            z.string().max(MAX_CALLBACK_PARAM_VALUE_LENGTH)
+          )
+          .refine(
+            (params) => Object.keys(params).length <= MAX_CALLBACK_PARAMS,
+            { message: `At most ${MAX_CALLBACK_PARAMS} callback parameters` }
+          ),
         providerId: z.string(),
       })
     )
@@ -184,6 +250,8 @@ export const bankConnectionRouter = {
         });
       }
 
+      await consumeStateNonce(connectionState.nonce, userId);
+
       const completed = await provider.completeConnection({
         callbackParams: input.params,
         user: providerUser,
@@ -220,6 +288,23 @@ export const bankConnectionRouter = {
         return created;
       });
 
+      const syncStartedAt = await Effect.runPromise(
+        Effect.tryPromise({
+          catch: (cause) => new FirstSyncNotStarted({ cause }),
+          try: () =>
+            startAccountSync(userId, {
+              connectionId: connection.id,
+              force: false,
+            }),
+        }).pipe(
+          Effect.catchTag("FirstSyncNotStarted", (failure) =>
+            Effect.logWarning("First bank sync not started", failure).pipe(
+              Effect.as(null)
+            )
+          )
+        )
+      );
+
       return {
         accounts: completed.accounts.map((a) => ({
           iban: a.iban,
@@ -230,6 +315,7 @@ export const bankConnectionRouter = {
         institutionName: bankName,
         returnTo: connectionState.returnTo,
         sessionId: completed.providerSessionId,
+        syncStartedAt,
       };
     }),
 
@@ -365,8 +451,10 @@ export const bankConnectionRouter = {
 
       const providerUser = await ensureProviderUser(userId, provider);
       const redirectUrl = `${env.CORS_ORIGIN}${provider.callbackPath}`;
+      const nonce = await issueStateNonce(userId);
       const encodedState = encodeBankConnectionState({
         institution,
+        nonce,
         original: input.state,
         providerId: provider.id,
         returnTo: input.returnTo,

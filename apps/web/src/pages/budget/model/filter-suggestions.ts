@@ -17,9 +17,10 @@ import type {
 import { categoryRowMatches } from "@/entities/category";
 import { m } from "@/paraglide/messages.js";
 import { formatCurrency } from "@/shared/lib/format-currency";
-import { foldForSearch } from "@/shared/lib/search-text";
+import { foldForSearch } from "@/shared/lib/text";
 
 import type {
+  AccountDraft,
   AmountDraft,
   CategoryDraft,
   CompanyDraft,
@@ -42,6 +43,7 @@ export type FilterSuggestion =
       operator: AmountFilterOperator | ListFilterOperator;
       symbol: string | null;
     }
+  | { accountId: string; kind: "account"; label: string; picked: boolean }
   | { kind: "company"; label: string; name: string; picked: boolean }
   | {
       isGroup: boolean;
@@ -152,27 +154,53 @@ export const companySuggestions = (
   }));
 };
 
+export interface AccountChoice {
+  id: string;
+  label: string;
+}
+
+export const accountSuggestions = (
+  draft: AccountDraft,
+  accounts: readonly AccountChoice[],
+  query: string
+): FilterSuggestion[] =>
+  accounts.flatMap((account) =>
+    foldForSearch(account.label).includes(foldForSearch(query.trim()))
+      ? [
+          {
+            accountId: account.id,
+            kind: "account" as const,
+            label: account.label,
+            picked: draft.values.includes(account.id),
+          },
+        ]
+      : []
+  );
+
 const amountSuggestion = (
   draft: AmountDraft,
-  minorUnits: number
+  minorUnits: number,
+  currency: string
 ): FilterSuggestion[] =>
   minorUnits > 0 && minorUnits <= MAX_FILTER_AMOUNT_MINOR_UNITS
     ? [
         {
           kind: "amount",
-          label: `${AMOUNT_OPERATOR_SYMBOLS[draft.operator]()} ${formatCurrency(minorUnits)}`,
+          label: `${AMOUNT_OPERATOR_SYMBOLS[draft.operator]()} ${formatCurrency(minorUnits, currency)}`,
           minorUnits,
         },
       ]
     : [];
 
 export interface SuggestionContext {
+  accounts: readonly AccountChoice[];
   companies: {
     isError: boolean;
     isPending: boolean;
     names: readonly string[];
     query: string;
   };
+  currency: string;
   draft: FilterDraft | null;
   filters: readonly TransactionFilter[];
   query: string;
@@ -181,7 +209,9 @@ export interface SuggestionContext {
 }
 
 export const filterSuggestionsFor = ({
+  accounts,
   companies,
+  currency,
   draft,
   filters,
   query,
@@ -197,7 +227,11 @@ export const filterSuggestionsFor = ({
   }
 
   if (draft.stage === "amount") {
-    return amountSuggestion(draft, typedAmountMinor);
+    return amountSuggestion(draft, typedAmountMinor, currency);
+  }
+
+  if (draft.field === "account") {
+    return accountSuggestions(draft, accounts, query);
   }
 
   return draft.field === "category"
@@ -217,7 +251,7 @@ const companyStatus = ({
 };
 
 export const filterSuggestionStatus = (
-  { companies, draft, filters, typedAmountMinor }: SuggestionContext,
+  { companies, currency, draft, filters, typedAmountMinor }: SuggestionContext,
   suggestions: readonly FilterSuggestion[]
 ): string | null => {
   if (draft === null) {
@@ -229,7 +263,7 @@ export const filterSuggestionStatus = (
   if (draft.stage === "amount") {
     if (typedAmountMinor > MAX_FILTER_AMOUNT_MINOR_UNITS) {
       return m.budget_filter_amount_too_large({
-        amount: formatCurrency(MAX_FILTER_AMOUNT_MINOR_UNITS),
+        amount: formatCurrency(MAX_FILTER_AMOUNT_MINOR_UNITS, currency),
       });
     }
 
@@ -238,6 +272,10 @@ export const filterSuggestionStatus = (
 
   if (draft.stage === "operator" || suggestions.length > 0) {
     return null;
+  }
+
+  if (draft.field === "account") {
+    return m.budget_account_search_empty();
   }
 
   return draft.field === "category"

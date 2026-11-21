@@ -1,9 +1,10 @@
 import type { AppRouter } from "@freenary/api/routers/index";
 import { createORPCClient } from "@orpc/client";
 import { RPCLink } from "@orpc/client/fetch";
+import { SimpleCsrfProtectionLinkPlugin } from "@orpc/client/plugins";
 import type { RouterClient } from "@orpc/server";
 import { createTanstackQueryUtils } from "@orpc/tanstack-query";
-import { QueryCache, QueryClient } from "@tanstack/react-query";
+import { MutationCache, QueryCache, QueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import { m } from "@/paraglide/messages.js";
@@ -19,21 +20,35 @@ const STALE_TIME_MS = 60 * 1000;
 export const createQueryClient = () =>
   new QueryClient({
     defaultOptions: { queries: { staleTime: STALE_TIME_MS } },
+    mutationCache: new MutationCache({
+      onError: (_error, _variables, _context, mutation) => {
+        const isHandledByCaller =
+          mutation.options.onError !== undefined ||
+          mutation.meta?.errorShownInline === true;
+
+        if (isHandledByCaller) {
+          return;
+        }
+
+        toast.error(m.mutation_error_generic());
+      },
+    }),
     queryCache: new QueryCache({
-      onError: (error, query) => {
+      onError: (_error, query) => {
         const isUnobservedPrefetch = query.getObserversCount() === 0;
 
         if (isUnobservedPrefetch) {
           return;
         }
 
-        toast.error(m.query_error({ reason: error.message }), {
+        toast.error(m.query_error_generic(), {
           action: {
             label: m.query_error_retry(),
             onClick: () => {
               query.invalidate();
             },
           },
+          id: query.queryHash,
         });
       },
     }),
@@ -48,6 +63,7 @@ const link = new RPCLink<ForwardedCookieContext>({
   },
   headers: ({ context }) =>
     context.cookie === undefined ? {} : { cookie: context.cookie },
+  plugins: [new SimpleCsrfProtectionLinkPlugin()],
   url: `${getServerUrl()}/rpc`,
 });
 

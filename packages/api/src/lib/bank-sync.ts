@@ -36,8 +36,11 @@ interface SyncWindow {
   dateTo: string;
 }
 
-interface ConnectionSyncContext {
+export interface ConnectionSyncContext {
   connection: ConnectionWithAccounts;
+  deleteTransactions: (
+    where: Prisma.TransactionWhereInput
+  ) => Promise<{ count: number }>;
   provider: BankingProvider;
   reporter: SyncReporter;
   user: ProviderUserSession | null;
@@ -73,13 +76,6 @@ const failureLine = (failure: BankSyncFailed): string =>
         `Connection ${scope.institutionName}: ${failure.detail}`,
     })
   );
-
-const recordFailure =
-  (errors: string[]) =>
-  (failure: BankSyncFailed): Effect.Effect<void> =>
-    Effect.sync(() => {
-      errors.push(failureLine(failure));
-    });
 
 const accountFailure =
   (account: SyncAccount) =>
@@ -153,55 +149,145 @@ const deriveKey = (
     remittanceLines: tx.remittanceLines,
   });
 
-const upsertTransaction = async (
-  accountId: string,
+const transactionFields = (
   tx: ProviderTransaction,
   connection: ConnectionWithAccounts
 ) => {
-  const shared = mapProviderFields(tx);
   const keyResult = deriveKey(tx, connection);
 
-  await prisma.transaction.upsert({
-    create: {
-      ...shared,
-      accountId,
-      category: null,
-      categoryOverride: false,
-      channel: keyResult.channel,
-      intermediaryName: keyResult.intermediaryName,
-      merchantKey: keyResult.merchantKey || null,
-      normalisedDescriptor: keyResult.normalisedDescriptor || null,
-      providerTransactionId: tx.providerTransactionId,
-      transactionPath: keyResult.path,
-    },
-    update: {
-      ...shared,
-      channel: keyResult.channel,
-      intermediaryName: keyResult.intermediaryName,
-      merchantKey: keyResult.merchantKey || null,
-      normalisedDescriptor: keyResult.normalisedDescriptor || null,
-      transactionPath: keyResult.path,
-    },
-    where: {
-      accountId_providerTransactionId: {
-        accountId,
-        providerTransactionId: tx.providerTransactionId,
-      },
-    },
+  return {
+    ...mapProviderFields(tx),
+    channel: keyResult.channel,
+    intermediaryName: keyResult.intermediaryName,
+    merchantKey: keyResult.merchantKey || null,
+    normalisedDescriptor: keyResult.normalisedDescriptor || null,
+    transactionPath: keyResult.path,
+  };
+};
+
+type TransactionFields = ReturnType<typeof transactionFields>;
+
+type TransactionColumn = keyof TransactionFields;
+
+const NON_TEXT_COLUMN_TYPES: Partial<Record<TransactionColumn, string>> = {
+  amount: "integer",
+  balanceAfterTransaction: "integer",
+  creditorIdentifications: "jsonb",
+  date: "timestamp(3)",
+  remittanceLines: "text[]",
+  transactionDate: "timestamp(3)",
+  valueDate: "timestamp(3)",
+};
+
+const TRANSACTION_BATCH_SIZE = 500;
+
+const quoted = (column: string) => Prisma.raw(`"${column}"`);
+
+// SAFETY: a timestamp column ignores the trailing Z, so the instant is stored in UTC like Prisma's own writes
+const sqlCell = (
+  column: TransactionColumn,
+  value: TransactionFields[TransactionColumn]
+): Prisma.Sql => {
+  const type = NON_TEXT_COLUMN_TYPES[column] ?? "text";
+
+  if (value === Prisma.DbNull || value === null) {
+    return Prisma.sql`NULL::${Prisma.raw(type)}`;
+  }
+
+  if (value instanceof Date) {
+    return Prisma.sql`${value.toISOString()}::${Prisma.raw(type)}`;
+  }
+
+  return Prisma.sql`${type === "jsonb" ? JSON.stringify(value) : value}::${Prisma.raw(type)}`;
+};
+
+const writeTransactionBatch = async (
+  accountId: string,
+  rows: readonly { fields: TransactionFields; providerTransactionId: string }[]
+): Promise<void> => {
+  const [first] = rows;
+
+  if (!first) {
+    return;
+  }
+
+  // SAFETY: Object.keys of a TransactionFields lists TransactionColumns
+  const columns = Object.keys(first.fields) as TransactionColumn[];
+
+  const resolutionIsStale = Prisma.sql`NOT t."categoryOverride" AND NOT t."isInternalTransfer" AND t."merchantKey" IS DISTINCT FROM v."merchantKey"`;
+
+  const updated = await prisma.$queryRaw<{ providerTransactionId: string }[]>`
+    UPDATE "transaction" AS t
+    SET ${Prisma.join(
+      columns.map(
+        (column) => Prisma.sql`${quoted(column)} = v.${quoted(column)}`
+      )
+    )},
+      "resolvedCategory" = CASE WHEN ${resolutionIsStale} THEN NULL ELSE t."resolvedCategory" END,
+      "resolutionStage" = CASE WHEN ${resolutionIsStale} THEN NULL ELSE t."resolutionStage" END,
+      "resolutionConfidence" = CASE WHEN ${resolutionIsStale} THEN NULL ELSE t."resolutionConfidence" END
+    FROM (VALUES ${Prisma.join(
+      rows.map(
+        ({ fields, providerTransactionId }) =>
+          Prisma.sql`(${providerTransactionId}::text, ${Prisma.join(
+            columns.map((column) => sqlCell(column, fields[column]))
+          )})`
+      )
+    )}) AS v ("providerTransactionId", ${Prisma.join(columns.map(quoted))})
+    WHERE t."accountId" = ${accountId}
+      AND t."providerTransactionId" = v."providerTransactionId"
+    RETURNING t."providerTransactionId"
+  `;
+
+  const existing = new Set(updated.map((row) => row.providerTransactionId));
+
+  await prisma.transaction.createMany({
+    data: rows.flatMap(({ fields, providerTransactionId }) =>
+      existing.has(providerTransactionId)
+        ? []
+        : [
+            {
+              ...fields,
+              accountId,
+              category: null,
+              categoryOverride: false,
+              providerTransactionId,
+            },
+          ]
+    ),
+    skipDuplicates: true,
   });
 };
 
-const upsertTransactionsInSeries = async (
+const upsertTransactionsInBatches = async (
   accountId: string,
   transactions: readonly ProviderTransaction[],
   connection: ConnectionWithAccounts,
   reporter: SyncReporter
 ): Promise<void> => {
-  for (const tx of transactions) {
+  const lastCopyPerId = [
+    ...new Map(
+      transactions.map((tx) => [
+        tx.providerTransactionId,
+        {
+          fields: transactionFields(tx, connection),
+          providerTransactionId: tx.providerTransactionId,
+        },
+      ])
+    ).values(),
+  ];
+
+  for (
+    let start = 0;
+    start < lastCopyPerId.length;
+    start += TRANSACTION_BATCH_SIZE
+  ) {
+    const batch = lastCopyPerId.slice(start, start + TRANSACTION_BATCH_SIZE);
+
     // eslint-disable-next-line no-await-in-loop -- sequential to avoid unique constraint races
-    await upsertTransaction(accountId, tx, connection);
+    await writeTransactionBatch(accountId, batch);
     // eslint-disable-next-line no-await-in-loop -- the reporter writes at most once a second; the rest resolve immediately
-    await reporter.transactionsImported(1);
+    await reporter.transactionsImported(batch.length);
   }
 };
 
@@ -328,6 +414,35 @@ export const syncWindow = (
   };
 };
 
+export const earliestImportedDay = (
+  connections: { lastSyncedAt: Date | null }[],
+  force: boolean,
+  oldestPending: Date | null,
+  now: Date = new Date()
+): Date | null => {
+  const starts = connections.map((connection) =>
+    new Date(
+      syncWindow(connection.lastSyncedAt, now, force, oldestPending).dateFrom
+    ).getTime()
+  );
+
+  return starts.length === 0 ? null : new Date(Math.min(...starts));
+};
+
+export const oldestPendingDate = async (
+  connectionIds: readonly string[]
+): Promise<Date | null> => {
+  const pending = await prisma.transaction.aggregate({
+    _min: { date: true },
+    where: {
+      account: { connectionId: { in: [...connectionIds] } },
+      status: PENDING,
+    },
+  });
+
+  return pending._min.date;
+};
+
 export const staleTransactionsWhere = (
   accountId: string,
   dateFrom: string,
@@ -347,7 +462,15 @@ export const staleTransactionsWhere = (
 });
 
 const importAccount = async (context: AccountSyncContext): Promise<void> => {
-  const { account, connection, provider, reporter, user, window } = context;
+  const {
+    account,
+    connection,
+    deleteTransactions,
+    provider,
+    reporter,
+    user,
+    window,
+  } = context;
 
   const transactions = await provider.fetchTransactions({
     dateFrom: window.dateFrom,
@@ -359,10 +482,10 @@ const importAccount = async (context: AccountSyncContext): Promise<void> => {
 
   const kept = transactions.filter((tx) => tx.status !== REJECTED);
 
-  await upsertTransactionsInSeries(account.id, kept, connection, reporter);
-  await prisma.transaction.deleteMany({
-    where: staleTransactionsWhere(account.id, window.dateFrom, kept),
-  });
+  await upsertTransactionsInBatches(account.id, kept, connection, reporter);
+  await deleteTransactions(
+    staleTransactionsWhere(account.id, window.dateFrom, kept)
+  );
 
   const { fetchHoldings } = provider;
 
@@ -377,49 +500,45 @@ const importAccount = async (context: AccountSyncContext): Promise<void> => {
   }
 };
 
-const importAccountsInSeries = (
+export const importAccountsInSeries = (
   context: ConnectionSyncContext,
-  accounts: readonly SyncAccount[],
-  errors: string[]
-): Effect.Effect<void> =>
-  Effect.forEach(
-    accounts,
-    (account) =>
+  accounts: readonly SyncAccount[]
+): Effect.Effect<string[]> =>
+  Effect.all(
+    accounts.map((account) =>
       Effect.tryPromise({
         catch: accountFailure(account),
         try: () => importAccount({ ...context, account }),
       }).pipe(
-        Effect.catchTag("BankSyncFailed", recordFailure(errors)),
-        Effect.flatMap(() =>
+        Effect.as([]),
+        Effect.catchTag("BankSyncFailed", (failure) =>
+          Effect.succeed([failureLine(failure)])
+        ),
+        Effect.tap(() =>
           Effect.promise(() => context.reporter.accountFinished())
         )
-      ),
-    { discard: true }
-  );
+      )
+    )
+  ).pipe(Effect.map((failures) => failures.flat()));
 
 const connectionSteps = Effect.fnUntraced(function* connectionSteps(
   connection: ConnectionWithAccounts,
-  errors: string[],
   user: ProviderUserSession | null,
   reporter: SyncReporter,
   reReadFullWindow: boolean
 ) {
   const failed = connectionFailure(connection);
   const now = new Date();
-  const pending = yield* Effect.tryPromise({
+  const oldestPending = yield* Effect.tryPromise({
     catch: failed,
-    try: () =>
-      prisma.transaction.aggregate({
-        _min: { date: true },
-        where: { account: { connectionId: connection.id }, status: PENDING },
-      }),
+    try: () => oldestPendingDate([connection.id]),
   });
 
   const window = syncWindow(
     connection.lastSyncedAt,
     now,
     reReadFullWindow,
-    pending._min.date
+    oldestPending
   );
 
   const provider = yield* Effect.try({
@@ -434,11 +553,21 @@ const connectionSteps = Effect.fnUntraced(function* connectionSteps(
 
   yield* Effect.promise(() => reporter.accountsDiscovered(accounts.length));
 
-  yield* importAccountsInSeries(
-    { connection, provider, reporter, user, window },
-    accounts,
-    errors
+  const accountFailures = yield* importAccountsInSeries(
+    {
+      connection,
+      deleteTransactions: (where) => prisma.transaction.deleteMany({ where }),
+      provider,
+      reporter,
+      user,
+      window,
+    },
+    accounts
   );
+
+  if (accountFailures.length > 0) {
+    return accountFailures;
+  }
 
   yield* Effect.tryPromise({
     catch: failed,
@@ -448,18 +577,20 @@ const connectionSteps = Effect.fnUntraced(function* connectionSteps(
         where: { id: connection.id },
       }),
   });
+
+  return [];
 });
 
-export const syncConnection = async (
+export const syncConnection = (
   connection: ConnectionWithAccounts,
-  errors: string[],
   user: ProviderUserSession | null,
   reporter: SyncReporter,
   force = false
-): Promise<void> => {
-  await Effect.runPromise(
-    connectionSteps(connection, errors, user, reporter, force).pipe(
-      Effect.catchTag("BankSyncFailed", recordFailure(errors))
+): Promise<string[]> =>
+  Effect.runPromise(
+    connectionSteps(connection, user, reporter, force).pipe(
+      Effect.catchTag("BankSyncFailed", (failure) =>
+        Effect.succeed([failureLine(failure)])
+      )
     )
   );
-};

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import { Array as Arr } from "effect";
 
+import { minorUnitDigits } from "../../lib/money";
 import type {
   ProviderCreditorIdentification,
   ProviderTransaction,
@@ -22,16 +23,17 @@ const BOOKED = "BOOK";
 
 export const parseMinorUnits = (
   amount: string,
-  creditDebitIndicator: string = CREDIT_INDICATOR
+  creditDebitIndicator: string = CREDIT_INDICATOR,
+  digits: number = MINOR_UNIT_DIGITS
 ): number => {
+  const isSigned = LEADING_MINUS.test(amount);
   const unsigned = amount.replace(LEADING_MINUS, "");
   const [units = "0", rawFraction = ""] = unsigned.split(".");
-  const fraction = rawFraction
-    .padEnd(MINOR_UNIT_DIGITS, "0")
-    .slice(0, MINOR_UNIT_DIGITS);
+  const fraction = rawFraction.padEnd(digits, "0").slice(0, digits);
 
   const magnitude = Math.trunc(Number(`${units}${fraction}`));
-  const sign = creditDebitIndicator === DEBIT_INDICATOR ? -1 : 1;
+  const isDebit = isSigned || creditDebitIndicator === DEBIT_INDICATOR;
+  const sign = isDebit ? -1 : 1;
 
   return magnitude * sign;
 };
@@ -112,17 +114,27 @@ const mapCreditorFields = (tx: EBTransaction) => ({
   creditorTown: tx.creditor?.postal_address?.town_name,
 });
 
-const mapAmountFields = (tx: EBTransaction) => ({
-  amountMinor: parseMinorUnits(
-    tx.transaction_amount?.amount ?? "0",
-    tx.credit_debit_indicator
-  ),
-  balanceAfterMinor: tx.balance_after_transaction?.amount
-    ? parseMinorUnits(tx.balance_after_transaction.amount)
-    : undefined,
-  currency: tx.transaction_amount?.currency ?? FALLBACK_CURRENCY,
-  exchangeRate: tx.exchange_rate?.exchange_rate,
-});
+const mapAmountFields = (tx: EBTransaction) => {
+  const currency = tx.transaction_amount?.currency ?? FALLBACK_CURRENCY;
+  const digits = minorUnitDigits(currency);
+
+  return {
+    amountMinor: parseMinorUnits(
+      tx.transaction_amount?.amount ?? "0",
+      tx.credit_debit_indicator,
+      digits
+    ),
+    balanceAfterMinor: tx.balance_after_transaction?.amount
+      ? parseMinorUnits(
+          tx.balance_after_transaction.amount,
+          CREDIT_INDICATOR,
+          digits
+        )
+      : undefined,
+    currency,
+    exchangeRate: tx.exchange_rate?.exchange_rate,
+  };
+};
 
 const mapEBTransaction = (
   tx: EBTransaction,
@@ -134,7 +146,8 @@ const mapEBTransaction = (
   bankTransactionDescription: tx.bank_transaction_code?.description,
   bankTransactionFamilyCode: tx.bank_transaction_code?.code,
   bankTransactionSubCode: tx.bank_transaction_code?.sub_code,
-  bookingDate: tx.booking_date ?? fallbackDate,
+  bookingDate:
+    tx.booking_date ?? tx.transaction_date ?? tx.value_date ?? fallbackDate,
   debtorIban: tx.debtor_account?.iban,
   debtorName: tx.debtor?.name,
   merchantCategoryCode: tx.merchant_category_code,

@@ -1,19 +1,17 @@
+import { fromMinor } from "@freenary/api/lib/money";
 import { categoriesInGroup } from "@freenary/api/lib/taxonomy";
 import type { SpendingCategory } from "@freenary/api/lib/taxonomy";
 
 import { EMPTY_CATEGORY_FILTER, filterCount } from "@/entities/category";
 import type { CategoryFilter } from "@/entities/category";
-import { foldForSearch } from "@/shared/lib/search-text";
+import { merchantLabel } from "@/entities/recurring";
+import type { RecurringItem } from "@/entities/recurring";
+import { foldForSearch } from "@/shared/lib/text";
 
-import {
-  merchantLabel,
-  monthlyEquivalentMinor,
-  recurringSections,
-} from "./recurring";
+import { monthlyEquivalentMinor, recurringSections } from "./recurring";
 import type {
   RecurrenceConfidence,
   RecurrenceFrequency,
-  RecurringItem,
   RecurringSection,
 } from "./recurring";
 import type { RecurringSortMode } from "./search";
@@ -41,7 +39,6 @@ export const EMPTY_RECURRING_FILTER: RecurringFilter = {
   search: "",
 };
 
-const MINOR_PER_UNIT = 100;
 const AMOUNT_RANGE_COUNTS_ONCE = 1;
 const NO_AMOUNT_BOUND = 0;
 
@@ -98,8 +95,7 @@ export const filterRecurringItems = (
 ): RecurringItem[] => {
   const allowed = categoriesUnionedWithGroups(filter.categories);
   const needle = foldForSearch(filter.search.trim());
-  const minMonthlyMinor = filter.amount.min * MINOR_PER_UNIT;
-  const maxMonthlyMinor = filter.amount.max * MINOR_PER_UNIT;
+  const { max, min } = filter.amount;
 
   return items.filter((item) => {
     if (allowed !== null && !allowed.has(item.category)) {
@@ -120,13 +116,13 @@ export const filterRecurringItems = (
       return false;
     }
 
-    const monthlyMinor = monthlyEquivalentMinor(item);
+    const monthly = fromMinor(monthlyEquivalentMinor(item), item.currency);
 
-    if (minMonthlyMinor > 0 && monthlyMinor < minMonthlyMinor) {
+    if (min > 0 && monthly < min) {
       return false;
     }
 
-    if (maxMonthlyMinor > 0 && monthlyMinor > maxMonthlyMinor) {
+    if (max > 0 && monthly > max) {
       return false;
     }
 

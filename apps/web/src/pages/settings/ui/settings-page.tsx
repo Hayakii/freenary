@@ -28,7 +28,7 @@ import type { OperatorStanding } from "../model/settings-nav-items";
 import { useBudgetProfileEditor } from "../model/use-budget-profile-editor";
 import type {
   BudgetProfileEditor,
-  ServerBudgetLine,
+  ServerBudgetProfile,
 } from "../model/use-budget-profile-editor";
 import {
   AppearanceLocaleSection,
@@ -62,12 +62,13 @@ interface BudgetPaneProps {
 }
 
 interface SettingsContentProps extends SecurityPaneProps {
+  budgetLoadError: ReactNode;
   categories: CategoryEntry[];
   isCategoriesPending: boolean;
   isPending: boolean;
   operatorStanding: OperatorStanding;
   section: SettingsSection;
-  serverLines: ServerBudgetLine[] | undefined;
+  serverProfile: ServerBudgetProfile | undefined;
 }
 
 const AppearancePane = () => (
@@ -94,6 +95,7 @@ const BudgetPane = ({
     <BudgetingSection
       addLine={editor.addLine}
       categories={categories}
+      currency={editor.currency}
       errors={editor.errors}
       isPending={isPending}
       lines={editor.lines}
@@ -153,6 +155,7 @@ const SecurityPane = ({
 
 const SettingsContent = ({
   accounts,
+  budgetLoadError,
   categories,
   isAccountsPending,
   isCategoriesPending,
@@ -161,14 +164,14 @@ const SettingsContent = ({
   operatorStanding,
   providers,
   section,
-  serverLines,
+  serverProfile,
   sessions,
 }: SettingsContentProps) => {
-  const editor = useBudgetProfileEditor(serverLines, categories);
+  const editor = useBudgetProfileEditor(serverProfile, categories);
 
   const panes = {
     appearance: <AppearancePane />,
-    budget: (
+    budget: budgetLoadError ?? (
       <BudgetPane
         categories={categories}
         editor={editor}
@@ -212,20 +215,18 @@ export const SettingsPage = () => {
   const accountsQuery = useQuery(authAccountsQueryOptions());
   const instanceStatusQuery = useQuery(orpc.instance.status.queryOptions());
 
-  if (categoriesQuery.isError || profileQuery.isError) {
-    const isRetrying = categoriesQuery.isFetching || profileQuery.isFetching;
-
-    return (
+  const budgetLoadError =
+    categoriesQuery.isError || profileQuery.isError ? (
       <Empty>
         <EmptyHeader>
           <EmptyMedia variant="icon">
             <RiErrorWarningLine />
           </EmptyMedia>
-          <EmptyTitle>{m.settings_load_error_title()}</EmptyTitle>
+          <EmptyTitle>{m.settings_budget_load_error_title()}</EmptyTitle>
         </EmptyHeader>
         <EmptyContent>
           <Button
-            loading={isRetrying}
+            loading={categoriesQuery.isFetching || profileQuery.isFetching}
             onClick={() => {
               void categoriesQuery.refetch();
               void profileQuery.refetch();
@@ -236,12 +237,12 @@ export const SettingsPage = () => {
           </Button>
         </EmptyContent>
       </Empty>
-    );
-  }
+    ) : null;
 
   return (
     <SettingsContent
       accounts={accountsQuery.data}
+      budgetLoadError={budgetLoadError}
       categories={categoriesQuery.data?.categories ?? []}
       isAccountsPending={accountsQuery.isPending || capabilitiesQuery.isPending}
       isCategoriesPending={categoriesQuery.isPending}
@@ -253,7 +254,7 @@ export const SettingsPage = () => {
       })}
       providers={capabilitiesQuery.data?.oauth}
       section={section}
-      serverLines={profileQuery.data?.lines}
+      serverProfile={profileQuery.data}
       sessions={sessionsQuery.data}
     />
   );

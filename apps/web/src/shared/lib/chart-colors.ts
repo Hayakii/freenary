@@ -1,8 +1,4 @@
-import { categoryPaletteSlot } from "@freenary/api/lib/taxonomy";
-import type {
-  CategoryColor,
-  SpendingCategory,
-} from "@freenary/api/lib/taxonomy";
+import type { CategoryColor } from "@freenary/api/lib/taxonomy";
 
 export const CHART_COLOR_VARS = {
   blue: "var(--chart-blue)",
@@ -12,7 +8,7 @@ export const CHART_COLOR_VARS = {
   pink: "var(--chart-pink)",
   purple: "var(--chart-purple)",
   red: "var(--chart-red)",
-} satisfies Record<CategoryColor, string>;
+} as const satisfies Record<CategoryColor, string>;
 
-export const categoryChartColor = (category: SpendingCategory): string =>
-  `var(--category-${categoryPaletteSlot(category)})`;
+export type ChartColorVar =
+  (typeof CHART_COLOR_VARS)[keyof typeof CHART_COLOR_VARS];

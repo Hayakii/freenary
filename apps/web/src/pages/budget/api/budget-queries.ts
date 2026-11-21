@@ -2,6 +2,7 @@ import type { TransactionFilter } from "@freenary/api/lib/transaction-filters";
 import type { QueryClient } from "@tanstack/react-query";
 import { infiniteQueryOptions, keepPreviousData } from "@tanstack/react-query";
 
+import { TRANSACTIONS_QUERY_KEY } from "@/entities/budget";
 import { client, orpc } from "@/shared/api";
 
 import type { AggregationMode } from "../model/period";
@@ -21,8 +22,6 @@ export interface TransactionsInput {
   sort: SortMode;
   to: Date;
 }
-
-export const TRANSACTIONS_QUERY_KEY = ["budget", "getTransactions"] as const;
 
 const PAGE_SIZE = 50;
 
@@ -66,6 +65,12 @@ export const transactionsQueryOptions = ({
     placeholderData: keepPreviousData,
   });
 
+export const periodOverviewQueryOptions = (period: PeriodInput) =>
+  orpc.budget.getPeriodOverview.queryOptions({
+    input: period,
+    placeholderData: keepPreviousData,
+  });
+
 const warmWithoutRaising = async (fetching: Promise<unknown>[]) => {
   await Promise.allSettled(fetching);
 };
@@ -85,18 +90,7 @@ export const prefetchPeriod = (
   list: Omit<TransactionsInput, "from" | "to">
 ) => {
   void warmWithoutRaising([
-    queryClient.query(
-      orpc.budget.getSpendingBreakdown.queryOptions({ input: period })
-    ),
-    queryClient.query(
-      orpc.budget.getSankeyData.queryOptions({ input: period })
-    ),
-    queryClient.query(
-      orpc.budget.getFixedVsVariable.queryOptions({ input: period })
-    ),
-    queryClient.query(
-      orpc.budget.getBudgetVsActual.queryOptions({ input: period })
-    ),
+    queryClient.query(periodOverviewQueryOptions(period)),
     queryClient.infiniteQuery(
       transactionsQueryOptions({ ...list, from: period.from, to: period.to })
     ),

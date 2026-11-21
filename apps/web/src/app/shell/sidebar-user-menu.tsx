@@ -1,9 +1,13 @@
 import {
   DropdownContent,
+  DropdownGroup,
+  DropdownGroupLabel,
   DropdownLabel,
   DropdownMenu,
   DropdownSeparator,
-  DropdownSubmenu,
+  DropdownSub,
+  DropdownSubContent,
+  DropdownSubTrigger,
   DropdownTrigger,
 } from "@freenary/ui/components/dropdown";
 import { MenuItem } from "@freenary/ui/components/menu-item";
@@ -13,19 +17,23 @@ import {
   SidebarMenuItem,
   useSidebar,
 } from "@freenary/ui/components/sidebar";
-import {
-  RiBookOpenLine,
-  RiContrastLine,
-  RiExpandUpDownLine,
-  RiLogoutBoxLine,
-  RiTranslate2,
-} from "@remixicon/react";
+import { RiExpandUpDownLine, RiExternalLinkLine } from "@remixicon/react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
+import {
+  Appearance,
+  BookOpen,
+  FileText,
+  Languages,
+  LogOut,
+  Signpost,
+} from "kubai-icons-react";
 
 import { m } from "@/paraglide/messages.js";
 import { authClient } from "@/shared/auth";
-import { docsUrl } from "@/shared/config";
+import { docsUrl, releaseNotesUrl, updateGuideUrl } from "@/shared/config";
+import { CHART_COLOR_VARS } from "@/shared/lib/chart-colors";
+import { kubaiIcon } from "@/shared/lib/kubai-icon";
 import { remixIcon } from "@/shared/lib/remix-icon";
 import {
   LocaleMenuItems,
@@ -36,12 +44,19 @@ import {
   useThemeCheckedIndex,
 } from "@/shared/ui/theme-menu-items";
 
+import { useAvailableUpdate } from "./use-available-update";
 import { UserIdentity } from "./user-identity";
 
-const LOCALE_ROW = 0;
-const THEME_ROW = 1;
-const DOCS_ROW = 2;
-const SIGN_OUT_ROW = 3;
+const UPDATE_NOTES_ROW = 0;
+const UPDATE_GUIDE_ROW = 1;
+const LOCALE_ROW = 2;
+const THEME_ROW = 3;
+const DOCS_ROW = 4;
+const SIGN_OUT_ROW = 5;
+
+const openInNewTab = (url: string) => {
+  window.open(url, "_blank", "noopener,noreferrer");
+};
 
 const SUBMENU_CLASS = "w-48 min-w-0";
 
@@ -51,6 +66,7 @@ export const SidebarUserMenu = () => {
   const { isMobile } = useSidebar();
   const { data: session, isPending, refetch } = authClient.useSession();
   const themeCheckedIndex = useThemeCheckedIndex();
+  const update = useAvailableUpdate();
 
   const refetchSessionThenLeaveAndDropCache = async () => {
     await refetch();
@@ -101,51 +117,75 @@ export const SidebarUserMenu = () => {
               </div>
             </DropdownLabel>
             <DropdownSeparator />
-            <DropdownSubmenu>
-              <MenuItem
-                icon={remixIcon(RiTranslate2)}
+            {update && (
+              <>
+                <DropdownGroup>
+                  <DropdownGroupLabel>
+                    {m.account_menu_update_available({ version: update })}
+                  </DropdownGroupLabel>
+                  <MenuItem
+                    icon={kubaiIcon(FileText, CHART_COLOR_VARS.blue)}
+                    index={UPDATE_NOTES_ROW}
+                    aria-label={`${m.account_menu_update_release_notes()} ${m.update_banner_new_tab()}`}
+                    label={m.account_menu_update_release_notes()}
+                    trailingIcon={remixIcon(RiExternalLinkLine)}
+                    onSelect={() => {
+                      openInNewTab(releaseNotesUrl(update));
+                    }}
+                  />
+                  <MenuItem
+                    icon={kubaiIcon(Signpost, CHART_COLOR_VARS.orange)}
+                    index={UPDATE_GUIDE_ROW}
+                    aria-label={`${m.account_menu_update_guide()} ${m.update_banner_new_tab()}`}
+                    label={m.account_menu_update_guide()}
+                    trailingIcon={remixIcon(RiExternalLinkLine)}
+                    onSelect={() => {
+                      openInNewTab(updateGuideUrl());
+                    }}
+                  />
+                </DropdownGroup>
+                <DropdownSeparator />
+              </>
+            )}
+            <DropdownSub>
+              <DropdownSubTrigger
+                icon={kubaiIcon(Languages, CHART_COLOR_VARS.blue)}
                 index={LOCALE_ROW}
                 label={m.locale_switcher_label()}
-                submenu
               />
-              <DropdownContent
-                align="start"
+              <DropdownSubContent
                 checkedIndex={localeCheckedIndex()}
                 className={SUBMENU_CLASS}
-                side="right"
               >
                 <DropdownLabel>{m.locale_switcher_label()}</DropdownLabel>
                 <LocaleMenuItems />
-              </DropdownContent>
-            </DropdownSubmenu>
-            <DropdownSubmenu>
-              <MenuItem
-                icon={remixIcon(RiContrastLine)}
+              </DropdownSubContent>
+            </DropdownSub>
+            <DropdownSub>
+              <DropdownSubTrigger
+                icon={kubaiIcon(Appearance, CHART_COLOR_VARS.purple)}
                 index={THEME_ROW}
                 label={m.theme_switcher_label()}
-                submenu
               />
-              <DropdownContent
-                align="start"
+              <DropdownSubContent
                 checkedIndex={themeCheckedIndex}
                 className={SUBMENU_CLASS}
-                side="right"
               >
                 <DropdownLabel>{m.theme_switcher_label()}</DropdownLabel>
                 <ThemeMenuItems />
-              </DropdownContent>
-            </DropdownSubmenu>
+              </DropdownSubContent>
+            </DropdownSub>
             <DropdownSeparator />
             <MenuItem
-              icon={remixIcon(RiBookOpenLine)}
+              icon={kubaiIcon(BookOpen, CHART_COLOR_VARS.green)}
               index={DOCS_ROW}
               label={m.account_documentation()}
               onSelect={() => {
-                window.open(docsUrl(), "_blank", "noopener,noreferrer");
+                openInNewTab(docsUrl());
               }}
             />
             <MenuItem
-              icon={remixIcon(RiLogoutBoxLine)}
+              icon={kubaiIcon(LogOut, CHART_COLOR_VARS.red)}
               index={SIGN_OUT_ROW}
               label={m.account_sign_out()}
               onSelect={handleSignOut}
