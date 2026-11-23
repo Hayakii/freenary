@@ -19,6 +19,7 @@ export interface ClassificationRecord {
 }
 
 export interface ClassificationStore {
+  failedAt: Map<string, number>;
   find: (signature: string) => Promise<CachedClassification | null>;
   save: (signature: string, record: ClassificationRecord) => Promise<void>;
 }
@@ -28,7 +29,8 @@ const findClassification = async (
 ): Promise<CachedClassification | null> => {
   const stored = await prisma.merchantClassification
     .findUnique({ where: { signature } })
-    .then(Option.fromNullishOr, Option.none);
+    .then(Option.fromNullishOr)
+    .catch(Option.none);
 
   return Option.match(stored, {
     onNone: () => null,
@@ -68,10 +70,12 @@ const saveClassification = async (
       update: row,
       where: { signature },
     })
-    .then(Option.some, Option.none);
+    .then(Option.some)
+    .catch(Option.none);
 };
 
 export const prismaClassificationStore: ClassificationStore = {
+  failedAt: new Map(),
   find: findClassification,
   save: saveClassification,
 };

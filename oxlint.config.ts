@@ -1,3 +1,4 @@
+import landmines from "@interfere/landmines/configs/recommended.json" with { type: "json" };
 import { defineConfig } from "oxlint";
 import { oxslop } from "oxslop/config";
 import core from "ultracite/oxlint/core";
@@ -33,7 +34,7 @@ export default defineConfig({
     "packages/ui/**",
     "apps/web/src/paraglide/**",
   ],
-  jsPlugins: ["@shadcn/lint"],
+  jsPlugins: ["@shadcn/lint", ...landmines.jsPlugins],
   overrides: [
     {
       files: ["apps/web/**"],
@@ -53,9 +54,11 @@ export default defineConfig({
                   "!@freenary/api/assistant/ui",
                   "!@freenary/api/dashboards/widgets",
                   "!@freenary/api/lib/aggregation",
+                  "!@freenary/api/lib/budget-month",
                   "!@freenary/api/lib/budget-profile",
                   "!@freenary/api/lib/categories",
                   "!@freenary/api/lib/money",
+                  "!@freenary/api/lib/public-holidays",
                   "!@freenary/api/lib/taxonomy",
                   "!@freenary/api/lib/transaction-filters",
                 ],
@@ -87,6 +90,7 @@ export default defineConfig({
     "react-perf",
     "jsx-a11y",
   ],
+  rules: landmines.rules,
   settings: {
     shadcn: {
       componentImports: ["^@/shared/ui(/|$)"],

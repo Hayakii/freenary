@@ -31,6 +31,12 @@ import {
   upsertUserOverride,
 } from "../categorisation/user-override";
 import { protectedProcedure } from "../index";
+import {
+  cashFlowAccountsOf,
+  cashFlowAccountTypesSql,
+  SAVING_CATEGORIES,
+  savingCategoriesSql,
+} from "../lib/account-types";
 import { accountsSummary } from "../lib/accounts-summary";
 import { AGGREGATION_MODES } from "../lib/aggregation";
 import type { AggregationMode } from "../lib/aggregation";
@@ -40,6 +46,12 @@ import {
   oldestPendingDate,
   syncConnection,
 } from "../lib/bank-sync";
+import {
+  budgetMonthKey,
+  budgetMonthKeysBetween,
+  budgetMonthOfBankDate,
+} from "../lib/budget-month";
+import type { BudgetMonthRule } from "../lib/budget-month";
 import type { PlannedLine } from "../lib/budget-planned";
 import {
   monthSpan,
@@ -72,9 +84,15 @@ import {
   transactionFiltersSchema,
 } from "../lib/transaction-filters";
 import { transactionPage } from "../lib/transaction-page";
+import { userBudgetMonthRule } from "../lib/user-budget-month";
 import { userCurrency } from "../lib/user-currency";
 import { spendingWeeksStart, weeklySpending } from "../lib/weekly-spending";
+import {
+  lowConfidenceTransactionIds,
+  notifyTransactionsToCheck,
+} from "../notifications/transactions-to-check";
 import { getProvider } from "../providers/registry";
+import { categorySuggestionProcedures } from "./category-suggestions";
 import { savedFilterProcedures } from "./saved-filters";
 
 interface OutgoingRow {
@@ -124,20 +142,45 @@ const DAILY_GRAIN_MAX_DAYS = 31;
 
 const WEEKLY_GRAIN_MAX_DAYS = 93;
 
+type CashFlowGrainName = "day" | "month" | "week";
+
 const CASH_FLOW_GRAINS = {
   day: {
     labelExpr: `to_char(t."date", 'YYYY-MM-DD')`,
     truncExpr: `date_trunc('day', t."date")`,
   },
-  month: {
-    labelExpr: `to_char(date_trunc('month', t."date"), 'YYYY-MM')`,
-    truncExpr: `date_trunc('month', t."date")`,
-  },
   week: {
     labelExpr: `to_char(date_trunc('week', t."date"), 'YYYY-MM-DD')`,
     truncExpr: `date_trunc('week', t."date")`,
   },
-} as const satisfies Record<string, CashFlowGrain>;
+} as const satisfies Record<Exclude<CashFlowGrainName, "month">, CashFlowGrain>;
+
+interface CashFlowRow {
+  incoming: number;
+  label: string;
+  outgoing: number;
+}
+
+const foldIntoBudgetMonths = (
+  days: CashFlowRow[],
+  rule: BudgetMonthRule
+): CashFlowRow[] => {
+  const months = new Map<string, CashFlowRow>();
+
+  for (const day of days) {
+    const label = budgetMonthKey(
+      budgetMonthOfBankDate(new Date(`${day.label}T00:00:00.000Z`), rule)
+    );
+
+    const month = months.get(label) ?? { incoming: 0, label, outgoing: 0 };
+
+    month.incoming += day.incoming;
+    month.outgoing += day.outgoing;
+    months.set(label, month);
+  }
+
+  return [...months.values()];
+};
 
 const AMOUNT_SIGN_PREDICATE = {
   incoming: 'AND t."amount" > 0',
@@ -146,16 +189,16 @@ const AMOUNT_SIGN_PREDICATE = {
 
 const RECURRING_MONTHS = 12;
 
-const cashFlowGrainFor = (spanDays: number): CashFlowGrain => {
+const cashFlowGrainFor = (spanDays: number): CashFlowGrainName => {
   if (spanDays <= DAILY_GRAIN_MAX_DAYS) {
-    return CASH_FLOW_GRAINS.day;
+    return "day";
   }
 
   if (spanDays <= WEEKLY_GRAIN_MAX_DAYS) {
-    return CASH_FLOW_GRAINS.week;
+    return "week";
   }
 
-  return CASH_FLOW_GRAINS.month;
+  return "month";
 };
 
 const cashFlowQuery = ({ labelExpr, truncExpr }: CashFlowGrain) =>
@@ -167,8 +210,10 @@ const cashFlowQuery = ({ labelExpr, truncExpr }: CashFlowGrain) =>
   JOIN "bank_account" ba ON ba."id" = t."accountId"
   JOIN "bank_connection" bc ON bc."id" = ba."connectionId"
   WHERE bc."userId" = $1
+    AND ${cashFlowAccountTypesSql('ba."type"')}
     AND t."date" >= $2
     AND t."date" <= $3
+    AND (NOT t."isInternalTransfer" OR ${savingCategoriesSql('t."resolvedCategory"')})
   GROUP BY ${truncExpr}, ${labelExpr}
   ORDER BY ${truncExpr} ASC`;
 
@@ -180,20 +225,15 @@ const periodInput = z.object({
   to: z.coerce.date(),
 });
 
-const zeroBasedMonthBucketKey = (date: Date) =>
-  `${date.getFullYear()}-${String(date.getMonth()).padStart(2, "0")}`;
+interface BucketedPeriod {
+  aggregation: AggregationMode;
+  from: Date;
+  rule: BudgetMonthRule;
+  to: Date;
+}
 
-const monthBucketKeysBetween = (from: Date, to: Date): string[] => {
-  const keys: string[] = [];
-  let cursor = new Date(from.getFullYear(), from.getMonth(), 1);
-
-  while (cursor <= to) {
-    keys.push(zeroBasedMonthBucketKey(cursor));
-    cursor = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1);
-  }
-
-  return keys;
-};
+const budgetMonthBucketKey = (date: Date, rule: BudgetMonthRule) =>
+  budgetMonthKey(budgetMonthOfBankDate(date, rule));
 
 const median = (values: number[]): number => {
   const sorted = values.toSorted((a, b) => a - b);
@@ -237,9 +277,7 @@ const aggregateMonthly = <K>(
 const aggregateOutgoing = <T extends { amount: number; date: Date }, K>(
   transactions: T[],
   keyOf: (tx: T) => K,
-  aggregation: AggregationMode,
-  from: Date,
-  to: Date
+  { aggregation, from, rule, to }: BucketedPeriod
 ): Map<K, number> => {
   if (aggregation === "total") {
     const totals = new Map<K, number>();
@@ -257,7 +295,7 @@ const aggregateOutgoing = <T extends { amount: number; date: Date }, K>(
 
   for (const tx of transactions) {
     const key = keyOf(tx);
-    const month = zeroBasedMonthBucketKey(tx.date);
+    const month = budgetMonthBucketKey(tx.date, rule);
     monthsWithTransactions.add(month);
     let series = monthly.get(key);
 
@@ -269,12 +307,25 @@ const aggregateOutgoing = <T extends { amount: number; date: Date }, K>(
     series.set(month, (series.get(month) ?? 0) + Math.abs(tx.amount));
   }
 
-  const activeMonths = monthBucketKeysBetween(from, to).filter((month) =>
+  const activeMonths = budgetMonthKeysBetween(from, to, rule).filter((month) =>
     monthsWithTransactions.has(month)
   );
 
   return aggregateMonthly(monthly, activeMonths, aggregation);
 };
+
+export const countedTransactionsWhere = (
+  userId: string,
+  from: Date,
+  to: Date
+): Prisma.TransactionWhereInput => ({
+  OR: [
+    { isInternalTransfer: false },
+    { resolvedCategory: { in: [...SAVING_CATEGORIES] } },
+  ],
+  account: cashFlowAccountsOf(userId),
+  date: { gte: from, lte: to },
+});
 
 const outgoingRows = (
   userId: string,
@@ -289,20 +340,14 @@ const outgoingRows = (
       merchantKey: true,
       resolvedCategory: true,
     },
-    where: {
-      account: { connection: { userId } },
-      amount: { lt: 0 },
-      date: { gte: from, lte: to },
-    },
+    where: { ...countedTransactionsWhere(userId, from, to), amount: { lt: 0 } },
   });
 
 const outgoingByCategory = (
   rows: OutgoingRow[],
-  aggregation: AggregationMode,
-  from: Date,
-  to: Date
+  period: BucketedPeriod
 ): Map<SpendingCategory, number> =>
-  aggregateOutgoing(rows, effectiveCategory, aggregation, from, to);
+  aggregateOutgoing(rows, effectiveCategory, period);
 
 const recurringShareByCategory = (
   rows: OutgoingRow[],
@@ -338,26 +383,25 @@ const recurringShareByCategory = (
 
 const userOutgoingByCategory = async (
   userId: string,
-  aggregation: AggregationMode,
-  from: Date,
-  to: Date
-): Promise<Map<SpendingCategory, number>> =>
-  outgoingByCategory(
-    await outgoingRows(userId, from, to),
-    aggregation,
-    from,
-    to
-  );
+  period: Omit<BucketedPeriod, "rule">
+): Promise<Map<SpendingCategory, number>> => {
+  const [rows, rule] = await Promise.all([
+    outgoingRows(userId, period.from, period.to),
+    userBudgetMonthRule(userId),
+  ]);
+
+  return outgoingByCategory(rows, { ...period, rule });
+};
 
 const directionTotals = async (where: Prisma.TransactionWhereInput) => {
   const [incoming, outgoing] = await Promise.all([
     prisma.transaction.aggregate({
       _sum: { amount: true },
-      where: { ...where, amount: { gt: 0 } },
+      where: { ...where, amount: { gt: 0 }, isInternalTransfer: false },
     }),
     prisma.transaction.aggregate({
       _sum: { amount: true },
-      where: { ...where, amount: { lt: 0 } },
+      where: { ...where, amount: { lt: 0 }, isInternalTransfer: false },
     }),
   ]);
 
@@ -402,10 +446,7 @@ const periodRows = (
       merchantKey: true,
       resolvedCategory: true,
     },
-    where: {
-      account: { connection: { userId } },
-      date: { gte: from, lte: to },
-    },
+    where: countedTransactionsWhere(userId, from, to),
   });
 
 const spendingBreakdownOf = (byCategory: Map<SpendingCategory, number>) => ({
@@ -538,9 +579,28 @@ const writeResolutions = (
   ).pipe(Effect.map((written) => written.reduce((sum, one) => sum + one, 0)));
 };
 
+const raiseTransactionsToCheck = (
+  userId: string,
+  transactionIds: readonly string[]
+): Effect.Effect<void> =>
+  Effect.tryPromise(() =>
+    notifyTransactionsToCheck(userId, transactionIds)
+  ).pipe(
+    Effect.matchEffect({
+      onFailure: (cause) =>
+        Effect.logWarning(
+          "Raising the transactions to check notification failed",
+          transactionIds.length,
+          cause
+        ),
+      onSuccess: () => Effect.void,
+    })
+  );
+
 const categoriseUncategorised = async (
   userId: string,
-  reporter: SyncReporter
+  reporter: SyncReporter,
+  askedForByUser: boolean
 ): Promise<number> => {
   const uncategorised = await prisma.transaction.findMany({
     select: {
@@ -632,6 +692,7 @@ const categoriseUncategorised = async (
     countries: dictionaryCountries,
     escalateBelow: classifierEscalateBelow,
     onSignatureSettled: reporter.heartbeat,
+    retryFailedMerchants: askedForByUser,
     store: prismaClassificationStore,
     timeoutMs: classifierCallBudget,
   });
@@ -658,7 +719,21 @@ const categoriseUncategorised = async (
 
   await reporter.categorised(inputs.length - resolutions.length);
 
-  return await Effect.runPromise(writeResolutions(resolutions, reporter));
+  const written = await Effect.runPromise(
+    writeResolutions(resolutions, reporter)
+  );
+
+  await Effect.runPromise(
+    raiseTransactionsToCheck(
+      userId,
+      lowConfidenceTransactionIds(
+        inputs.map((input) => input.txId),
+        results
+      )
+    )
+  );
+
+  return written;
 };
 
 const calendarMonthKey = (date: Date) =>
@@ -758,7 +833,7 @@ const categoriseAfterSync = (
         await clearResolutions({ connectionId, userId });
       }
 
-      return await categoriseUncategorised(userId, reporter);
+      return await categoriseUncategorised(userId, reporter, force);
     },
   }).pipe(
     Effect.map((categorised) => ({ categorised, failure: undefined })),
@@ -851,9 +926,7 @@ export const startAccountSync = async (
 
 const sankeyOf = (
   transactions: PeriodRow[],
-  aggregation: AggregationMode,
-  from: Date,
-  to: Date
+  { aggregation, from, rule, to }: BucketedPeriod
 ) => {
   let incomeSources: Map<string | null, number>;
   let expenseCategories: Map<SpendingCategory, number>;
@@ -881,7 +954,7 @@ const sankeyOf = (
     const monthlyExpense = new Map<SpendingCategory, Map<string, number>>();
 
     for (const tx of transactions) {
-      const month = zeroBasedMonthBucketKey(tx.date);
+      const month = budgetMonthBucketKey(tx.date, rule);
       monthsWithTransactions.add(month);
 
       if (tx.amount > 0) {
@@ -908,8 +981,8 @@ const sankeyOf = (
       }
     }
 
-    const activeMonths = monthBucketKeysBetween(from, to).filter((month) =>
-      monthsWithTransactions.has(month)
+    const activeMonths = budgetMonthKeysBetween(from, to, rule).filter(
+      (month) => monthsWithTransactions.has(month)
     );
 
     incomeSources = aggregateMonthly(monthlyIncome, activeMonths, aggregation);
@@ -975,6 +1048,7 @@ const sankeyOf = (
 };
 
 export const budgetRouter = {
+  ...categorySuggestionProcedures,
   ...savedFilterProcedures,
   getAccounts: protectedProcedure.handler(async ({ context }) => {
     const userId = context.session.user.id;
@@ -1024,7 +1098,7 @@ export const budgetRouter = {
 
       const [lines, actualByCategory, currency] = await Promise.all([
         budgetLinesOf(userId),
-        userOutgoingByCategory(userId, aggregation, from, to),
+        userOutgoingByCategory(userId, { aggregation, from, to }),
         userCurrency(userId),
       ]);
 
@@ -1047,26 +1121,31 @@ export const budgetRouter = {
         (to.getTime() - from.getTime()) / MILLISECONDS_PER_DAY
       );
 
+      const resolvedGrain = grain ?? cashFlowGrainFor(spanDays);
       const sql = cashFlowQuery(
-        grain === undefined
-          ? cashFlowGrainFor(spanDays)
-          : CASH_FLOW_GRAINS[grain]
+        CASH_FLOW_GRAINS[resolvedGrain === "month" ? "day" : resolvedGrain]
       );
 
-      const [periods, currency] = await Promise.all([
+      const [rows, currency, rule] = await Promise.all([
         prisma.$queryRawUnsafe<
           { incoming: bigint; label: string; outgoing: bigint }[]
         >(sql, userId, from, to),
         userCurrency(userId),
+        userBudgetMonthRule(userId),
       ]);
+
+      const periods = rows.map((row) => ({
+        incoming: Number(row.incoming),
+        label: row.label,
+        outgoing: Number(row.outgoing),
+      }));
 
       return {
         currency,
-        periods: periods.map((p) => ({
-          incoming: Number(p.incoming),
-          label: p.label,
-          outgoing: Number(p.outgoing),
-        })),
+        periods:
+          resolvedGrain === "month"
+            ? foldIntoBudgetMonths(periods, rule)
+            : periods,
       };
     }),
 
@@ -1076,16 +1155,17 @@ export const budgetRouter = {
       const userId = context.session.user.id;
       const { aggregation, from, to } = input;
 
-      const [rows, recurring, currency] = await Promise.all([
+      const [rows, recurring, currency, rule] = await Promise.all([
         outgoingRows(userId, from, to),
         detectRecurringExpenses(userId, cadenceWindow(from, to)),
         userCurrency(userId),
+        userBudgetMonthRule(userId),
       ]);
 
       return {
         ...fixedVsVariableOf(
           rows,
-          outgoingByCategory(rows, aggregation, from, to),
+          outgoingByCategory(rows, { aggregation, from, rule, to }),
           recurring
         ),
         currency,
@@ -1095,6 +1175,7 @@ export const budgetRouter = {
   getMerchants: protectedProcedure
     .input(
       z.object({
+        accountId: z.string().min(1).optional(),
         direction: z.enum(["incoming", "outgoing"]).optional(),
         from: z.coerce.date(),
         limit: z.number().int().min(1).max(100).default(30),
@@ -1103,7 +1184,7 @@ export const budgetRouter = {
       })
     )
     .handler(async ({ context, input }) => {
-      const { direction, from, limit, search, to } = input;
+      const { accountId, direction, from, limit, search, to } = input;
       const signPredicate = direction ? AMOUNT_SIGN_PREDICATE[direction] : "";
       const sql = `SELECT
           MIN(COALESCE(t."counterpartyName", initcap(t."normalisedDescriptor"))) AS name,
@@ -1117,6 +1198,7 @@ export const budgetRouter = {
           AND t."date" <= $3
           AND COALESCE(t."counterpartyName", t."normalisedDescriptor") <> ''
           AND ($4::text IS NULL OR COALESCE(t."counterpartyName", t."normalisedDescriptor") ILIKE '%' || $4 || '%')
+          AND ($6::text IS NULL OR t."accountId" = $6)
           ${signPredicate}
         GROUP BY lower(COALESCE(t."counterpartyName", t."normalisedDescriptor"))
         ORDER BY count DESC, name ASC
@@ -1130,7 +1212,8 @@ export const budgetRouter = {
         from,
         to,
         search === undefined ? null : escapeLikePattern(search),
-        limit
+        limit,
+        accountId ?? null
       );
 
       return {
@@ -1148,15 +1231,17 @@ export const budgetRouter = {
       const userId = context.session.user.id;
       const { aggregation, from, to } = input;
 
-      const [rows, lines, recurring, currency] = await Promise.all([
+      const [rows, lines, recurring, currency, rule] = await Promise.all([
         periodRows(userId, from, to),
         budgetLinesOf(userId),
         detectRecurringExpenses(userId, cadenceWindow(from, to)),
         userCurrency(userId),
+        userBudgetMonthRule(userId),
       ]);
 
+      const period = { aggregation, from, rule, to };
       const outgoing = rows.filter((row) => row.amount < 0);
-      const byCategory = outgoingByCategory(outgoing, aggregation, from, to);
+      const byCategory = outgoingByCategory(outgoing, period);
 
       return {
         budgetVsActual: {
@@ -1167,7 +1252,7 @@ export const budgetRouter = {
           ...fixedVsVariableOf(outgoing, byCategory, recurring),
           currency,
         },
-        sankey: { ...sankeyOf(rows, aggregation, from, to), currency },
+        sankey: { ...sankeyOf(rows, period), currency },
         spendingBreakdown: { ...spendingBreakdownOf(byCategory), currency },
       };
     }),
@@ -1184,7 +1269,7 @@ export const budgetRouter = {
         _min: { date: true },
         _sum: { amount: true },
         where: {
-          account: { connection: { userId } },
+          account: cashFlowAccountsOf(userId),
           amount: { gt: 0 },
           date: { gte: observed.from, lte: observed.to },
           isInternalTransfer: false,
@@ -1275,15 +1360,13 @@ export const budgetRouter = {
     .input(periodInput)
     .handler(async ({ context, input }) => {
       const userId = context.session.user.id;
-      const [rows, currency] = await Promise.all([
+      const [rows, currency, rule] = await Promise.all([
         periodRows(userId, input.from, input.to),
         userCurrency(userId),
+        userBudgetMonthRule(userId),
       ]);
 
-      return {
-        ...sankeyOf(rows, input.aggregation, input.from, input.to),
-        currency,
-      };
+      return { ...sankeyOf(rows, { ...input, rule }), currency };
     }),
 
   getSpendingBreakdown: protectedProcedure
@@ -1291,7 +1374,7 @@ export const budgetRouter = {
     .handler(async ({ context, input }) => {
       const userId = context.session.user.id;
       const [categoryAmounts, currency] = await Promise.all([
-        userOutgoingByCategory(userId, input.aggregation, input.from, input.to),
+        userOutgoingByCategory(userId, input),
         userCurrency(userId),
       ]);
 
@@ -1500,7 +1583,7 @@ export const budgetRouter = {
       Effect.promise(async () => {
         await clearResolutions({ userId });
 
-        return await categoriseUncategorised(userId, reporter);
+        return await categoriseUncategorised(userId, reporter, true);
       }).pipe(Effect.ensuring(Effect.promise(() => reporter.finished())))
     );
 

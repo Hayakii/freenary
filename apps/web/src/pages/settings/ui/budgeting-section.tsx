@@ -7,15 +7,17 @@ import { useSize } from "@freenary/ui/lib/size-context";
 import { cn } from "@freenary/ui/lib/utils";
 import { Reorder } from "motion/react";
 import { useState } from "react";
+import type { ReactNode } from "react";
 
 import { m } from "@/paraglide/messages.js";
 
 import { categoryParentOptions } from "../model/category-parent-options";
 import type { EditorLine } from "../model/use-budget-profile-editor";
 import { BudgetLineRow } from "./budget-line-row";
+import { BudgetMonthSection } from "./budget-month-section";
 import { BudgetProfilePreview } from "./budget-profile-preview";
 import { CustomCategoryDialog } from "./custom-category-dialog";
-import { SettingsSection } from "./settings-section";
+import { SettingsPane } from "./settings-section";
 
 interface BudgetingSectionProps {
   addLine: () => void;
@@ -24,6 +26,7 @@ interface BudgetingSectionProps {
   errors: Map<string, string>;
   isPending: boolean;
   lines: EditorLine[];
+  loadError: ReactNode;
   moveLine: (id: string, direction: "down" | "up") => void;
   removeLine: (id: string) => void;
   reorderLines: (lines: EditorLine[]) => void;
@@ -39,6 +42,7 @@ export const BudgetingSection = ({
   errors,
   isPending,
   lines,
+  loadError,
   moveLine,
   removeLine,
   reorderLines,
@@ -51,11 +55,26 @@ export const BudgetingSection = ({
   const PlusIcon = useIcon("plus");
   const { control } = useSize();
 
+  if (loadError) {
+    return (
+      <SettingsPane
+        description={m.settings_budgeting_description()}
+        title={m.settings_tab_budget()}
+      >
+        {loadError}
+      </SettingsPane>
+    );
+  }
+
   return (
-    <SettingsSection
+    <SettingsPane
       description={m.settings_budgeting_description()}
-      title={m.settings_budgeting_title()}
+      title={m.settings_tab_budget()}
     >
+      <BudgetMonthSection />
+
+      <Separator />
+
       <BudgetProfilePreview
         categories={categories}
         currency={currency}
@@ -130,6 +149,6 @@ export const BudgetingSection = ({
           editedKey: null,
         })}
       />
-    </SettingsSection>
+    </SettingsPane>
   );
 };

@@ -12,6 +12,8 @@ import { useCallback, useMemo } from "react";
 import type { CategoryFilter } from "@/entities/category";
 import { m } from "@/paraglide/messages.js";
 import { orpc } from "@/shared/api";
+import { useNow } from "@/shared/lib/calendar-day";
+import type { AmountRange } from "@/shared/lib/text";
 
 import { recurringInsights, recurringSummary } from "../model/recurring";
 import type {
@@ -20,7 +22,6 @@ import type {
 } from "../model/recurring";
 import { groupRecurringItems } from "../model/recurring-filters";
 import { BUDGET_SEARCH_DEFAULTS } from "../model/search";
-import type { AmountRange } from "../model/transaction-filters";
 import { useBudgetCurrency } from "../model/use-budget-currency";
 import { useRecurringView } from "../model/use-recurring-view";
 import { useSyncProgress } from "../model/use-sync-progress";
@@ -53,9 +54,10 @@ export const RecurringPage = () => {
 
   const isPending = recurringQuery.isLoading || isAwaitingFirstData;
 
+  const now = useNow();
   const asOf = useMemo(
-    () => (recurring ? new Date(recurring.asOf) : new Date()),
-    [recurring]
+    () => (recurring ? new Date(recurring.asOf) : now),
+    [now, recurring]
   );
 
   const derived = useMemo(

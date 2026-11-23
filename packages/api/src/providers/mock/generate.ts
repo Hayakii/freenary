@@ -115,8 +115,8 @@ const DAILY_CARD_COUNTS = [
 const ACCOUNT_KINDS = {
   checking: { name: "Compte de chèques", type: "CHECKING" },
   "life-insurance": { name: "Assurance vie", type: "LIFE_INSURANCE" },
-  pea: { name: "PEA", type: "BROKERAGE" },
-  savings: { name: "Livret A", type: "SAVINGS" },
+  pea: { name: "PEA", type: "PEA" },
+  savings: { name: "Livret A", type: "LIVRET_A" },
 } as const satisfies Record<
   MockAccountKind,
   { name: string; type: ProviderAccountType }
@@ -131,7 +131,7 @@ const seededBy = (key: string): Faker => {
 };
 
 const bankText = (text: string): string =>
-  text.normalize("NFD").replace(DIACRITICS, "").toUpperCase();
+  text.normalize("NFD").replaceAll(DIACRITICS, "").toUpperCase();
 
 const eurosToMinor = (
   random: Faker,

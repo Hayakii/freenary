@@ -69,13 +69,15 @@ The Access column comes from the middleware of each procedure in `packages/api/s
 | `bankConnection.exchangeCode` | `POST /api-reference/bankConnection/exchangeCode` | Signed in | `params` object, required; `providerId` string, required |
 | `bankConnection.getProviderAvailability` | `POST /api-reference/bankConnection/getProviderAvailability` | Signed in | none |
 | `bankConnection.listConnections` | `POST /api-reference/bankConnection/listConnections` | Signed in | none |
-| `bankConnection.listInstitutions` | `POST /api-reference/bankConnection/listInstitutions` | Signed in | `countries` array of string |
+| `bankConnection.listInstitutions` | `POST /api-reference/bankConnection/listInstitutions` | Signed in | none |
 | `bankConnection.startConnection` | `POST /api-reference/bankConnection/startConnection` | Signed in | `bankCountry` string, required; `institutionId` string, required; `returnTo` `"onboarding"` or `"settings"`, required; `state` string |
 
 ## budget
 
 | Procedure | HTTP route | Access | Input fields |
 | --- | --- | --- | --- |
+| `budget.getCategorySuggestionStatus` | `POST /api-reference/budget/getCategorySuggestionStatus` | Signed in | none |
+| `budget.suggestCategories` | `POST /api-reference/budget/suggestCategories` | Signed in | `currency` string; `direction` `"outgoing"` or `"incoming"`, required; `query` string, required |
 | `budget.deleteSavedFilter` | `POST /api-reference/budget/deleteSavedFilter` | Signed in | `id` string, required |
 | `budget.listSavedFilters` | `POST /api-reference/budget/listSavedFilters` | Signed in | none |
 | `budget.saveFilter` | `POST /api-reference/budget/saveFilter` | Signed in | `filters` array of object, required; `name` string, required; `search` string |
@@ -83,7 +85,7 @@ The Access column comes from the middleware of each procedure in `packages/api/s
 | `budget.getBudgetVsActual` | `POST /api-reference/budget/getBudgetVsActual` | Signed in | `aggregation` `"total"` or `"average"` or `"median"`; `from` string (date), required; `to` string (date), required |
 | `budget.getCashFlow` | `POST /api-reference/budget/getCashFlow` | Signed in | `from` string (date), required; `grain` `"day"` or `"week"` or `"month"`; `to` string (date), required |
 | `budget.getFixedVsVariable` | `POST /api-reference/budget/getFixedVsVariable` | Signed in | `aggregation` `"total"` or `"average"` or `"median"`; `from` string (date), required; `to` string (date), required |
-| `budget.getMerchants` | `POST /api-reference/budget/getMerchants` | Signed in | `direction` `"incoming"` or `"outgoing"`; `from` string (date), required; `limit` integer; `search` string; `to` string (date), required |
+| `budget.getMerchants` | `POST /api-reference/budget/getMerchants` | Signed in | `accountId` string; `direction` `"incoming"` or `"outgoing"`; `from` string (date), required; `limit` integer; `search` string; `to` string (date), required |
 | `budget.getPeriodOverview` | `POST /api-reference/budget/getPeriodOverview` | Signed in | `aggregation` `"total"` or `"average"` or `"median"`; `from` string (date), required; `to` string (date), required |
 | `budget.getRecurring` | `POST /api-reference/budget/getRecurring` | Signed in | none |
 | `budget.getRecurringExpenses` | `POST /api-reference/budget/getRecurringExpenses` | Signed in | none |
@@ -119,11 +121,24 @@ The Access column comes from the middleware of each procedure in `packages/api/s
 | `instance.status` | `POST /api-reference/instance/status` | Public | none |
 | `instance.update` | `POST /api-reference/instance/update` | Signed in | none |
 
+## notifications
+
+| Procedure | HTTP route | Access | Input fields |
+| --- | --- | --- | --- |
+| `notifications.clearTransactionsToCheck` | `POST /api-reference/notifications/clearTransactionsToCheck` | Signed in | `id` string, required |
+| `notifications.dismiss` | `POST /api-reference/notifications/dismiss` | Signed in | `id` string, required |
+| `notifications.dismissAll` | `POST /api-reference/notifications/dismissAll` | Signed in | none |
+| `notifications.list` | `POST /api-reference/notifications/list` | Signed in | none |
+| `notifications.markAllRead` | `POST /api-reference/notifications/markAllRead` | Signed in | none |
+| `notifications.markRead` | `POST /api-reference/notifications/markRead` | Signed in | `id` string, required |
+| `notifications.restore` | `POST /api-reference/notifications/restore` | Signed in | `id` string, required |
+| `notifications.transactionsToCheck` | `POST /api-reference/notifications/transactionsToCheck` | Signed in | `id` string, required |
+
 ## onboarding
 
 | Procedure | HTTP route | Access | Input fields |
 | --- | --- | --- | --- |
-| `onboarding.completeOnboarding` | `POST /api-reference/onboarding/completeOnboarding` | Signed in | `taxCountries` array of string, required |
+| `onboarding.completeOnboarding` | `POST /api-reference/onboarding/completeOnboarding` | Signed in | `budgetMonth` object; `taxCountries` array of string, required |
 | `onboarding.getStatus` | `POST /api-reference/onboarding/getStatus` | Signed in | none |
 
 ## portfolio
@@ -139,9 +154,11 @@ The Access column comes from the middleware of each procedure in `packages/api/s
 | --- | --- | --- | --- |
 | `settings.createCustomCategory` | `POST /api-reference/settings/createCustomCategory` | Signed in | `color` one of 7 values, required; `icon` one of 28 values, required; `label` string, required; `parentKey` string or null, required |
 | `settings.deleteCustomCategory` | `POST /api-reference/settings/deleteCustomCategory` | Signed in | `id` string, required |
+| `settings.getBudgetMonth` | `POST /api-reference/settings/getBudgetMonth` | Signed in | none |
 | `settings.getBudgetProfile` | `POST /api-reference/settings/getBudgetProfile` | Signed in | none |
 | `settings.listCategories` | `POST /api-reference/settings/listCategories` | Signed in | none |
 | `settings.moveCustomCategory` | `POST /api-reference/settings/moveCustomCategory` | Signed in | `direction` `"down"` or `"up"`, required; `id` string, required |
+| `settings.saveBudgetMonth` | `POST /api-reference/settings/saveBudgetMonth` | Signed in | `anchor` `"DAY_OF_MONTH"` or `"LAST_DAY"` or `"LAST_WORKING_DAY"`, required; `country` string or null, required; `startDay` integer, required |
 | `settings.saveBudgetProfile` | `POST /api-reference/settings/saveBudgetProfile` | Signed in | `lines` array of object, required |
 | `settings.updateCustomCategory` | `POST /api-reference/settings/updateCustomCategory` | Signed in | `color` one of 7 values, required; `icon` one of 28 values, required; `label` string, required; `parentKey` string or null, required; `id` string, required |
 

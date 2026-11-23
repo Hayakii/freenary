@@ -469,26 +469,6 @@
     "/bankConnection/listInstitutions": {
       "post": {
         "operationId": "bankConnection.listInstitutions",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "countries": {
-                    "type": "array",
-                    "maxItems": 10,
-                    "items": {
-                      "type": "string",
-                      "pattern": "^[A-Z]{2}$"
-                    }
-                  }
-                }
-              }
-            }
-          }
-        },
         "responses": {
           "200": {
             "description": "OK",
@@ -534,6 +514,76 @@
                   }
                 },
                 "required": ["bankCountry", "institutionId", "returnTo"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {},
+                    {
+                      "not": {}
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/budget/getCategorySuggestionStatus": {
+      "post": {
+        "operationId": "budget.getCategorySuggestionStatus",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {},
+                    {
+                      "not": {}
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/budget/suggestCategories": {
+      "post": {
+        "operationId": "budget.suggestCategories",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "currency": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z]{3}$"
+                  },
+                  "direction": {
+                    "enum": ["outgoing", "incoming"],
+                    "type": "string"
+                  },
+                  "query": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 120
+                  }
+                },
+                "required": ["direction", "query"]
               }
             }
           }
@@ -968,6 +1018,10 @@
               "schema": {
                 "type": "object",
                 "properties": {
+                  "accountId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
                   "direction": {
                     "enum": ["incoming", "outgoing"],
                     "type": "string"
@@ -2567,6 +2621,272 @@
         }
       }
     },
+    "/notifications/clearTransactionsToCheck": {
+      "post": {
+        "operationId": "notifications.clearTransactionsToCheck",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  }
+                },
+                "required": ["id"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {},
+                    {
+                      "not": {}
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/notifications/dismiss": {
+      "post": {
+        "operationId": "notifications.dismiss",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  }
+                },
+                "required": ["id"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {},
+                    {
+                      "not": {}
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/notifications/dismissAll": {
+      "post": {
+        "operationId": "notifications.dismissAll",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {},
+                    {
+                      "not": {}
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/notifications/list": {
+      "post": {
+        "operationId": "notifications.list",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {},
+                    {
+                      "not": {}
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/notifications/markAllRead": {
+      "post": {
+        "operationId": "notifications.markAllRead",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {},
+                    {
+                      "not": {}
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/notifications/markRead": {
+      "post": {
+        "operationId": "notifications.markRead",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  }
+                },
+                "required": ["id"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {},
+                    {
+                      "not": {}
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/notifications/restore": {
+      "post": {
+        "operationId": "notifications.restore",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  }
+                },
+                "required": ["id"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {},
+                    {
+                      "not": {}
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/notifications/transactionsToCheck": {
+      "post": {
+        "operationId": "notifications.transactionsToCheck",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  }
+                },
+                "required": ["id"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {},
+                    {
+                      "not": {}
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/onboarding/completeOnboarding": {
       "post": {
         "operationId": "onboarding.completeOnboarding",
@@ -2577,6 +2897,36 @@
               "schema": {
                 "type": "object",
                 "properties": {
+                  "budgetMonth": {
+                    "type": "object",
+                    "properties": {
+                      "anchor": {
+                        "enum": [
+                          "DAY_OF_MONTH",
+                          "LAST_DAY",
+                          "LAST_WORKING_DAY"
+                        ],
+                        "type": "string"
+                      },
+                      "country": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "pattern": "^[A-Z]{2}$"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "startDay": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 28
+                      }
+                    },
+                    "required": ["anchor", "country", "startDay"]
+                  },
                   "taxCountries": {
                     "type": "array",
                     "minItems": 1,
@@ -2833,6 +3183,28 @@
         }
       }
     },
+    "/settings/getBudgetMonth": {
+      "post": {
+        "operationId": "settings.getBudgetMonth",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {},
+                    {
+                      "not": {}
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/settings/getBudgetProfile": {
       "post": {
         "operationId": "settings.getBudgetProfile",
@@ -2896,6 +3268,61 @@
                   }
                 },
                 "required": ["direction", "id"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {},
+                    {
+                      "not": {}
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/settings/saveBudgetMonth": {
+      "post": {
+        "operationId": "settings.saveBudgetMonth",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "anchor": {
+                    "enum": ["DAY_OF_MONTH", "LAST_DAY", "LAST_WORKING_DAY"],
+                    "type": "string"
+                  },
+                  "country": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^[A-Z]{2}$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "startDay": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 28
+                  }
+                },
+                "required": ["anchor", "country", "startDay"]
               }
             }
           }
