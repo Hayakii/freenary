@@ -1,9 +1,9 @@
 ---
 title: Troubleshoot
-description: Find the cause of a stack that does not start or a sign-in that fails.
+description: Find the cause of a stack that does not start, a bank that stops importing or a sign-in that fails.
 ---
 
-This page helps you find why a Freenary stack does not start, why the browser shows an error, or why sign-in fails. You find the service that fails, read its log, and match the message to one of the cases below.
+This page helps you find why a Freenary stack does not start, why the browser shows an error, why a bank stops importing, or why sign-in fails. You find the service that fails, read its log, and match the message to one of the cases below.
 
 ## Before you start
 
@@ -45,10 +45,10 @@ The answer is `{"ok":true}`. Use your public address instead of `http://localhos
 ### The stack does not start
 
 - `docker compose up -d` stops with `required variable POSTGRES_PASSWORD is missing a value: Set POSTGRES_PASSWORD in .env`, or the same line for `BETTER_AUTH_SECRET`. `.env` lacks the value, or `.env` is not in the current folder. Add the value, for example `BETTER_AUTH_SECRET=` followed by the output of `openssl rand -hex 32`. See [Configuration](../reference/configuration.md#core-and-secrets).
-- It stops with `Bind for 0.0.0.0:3001 failed: port is already allocated`. Another program uses port `3001`. Set another port in `.env`, and the addresses that go with it:
+- It stops with `Bind for 127.0.0.1:3001 failed: port is already allocated`. Another program uses port `3001`. Set another port in `.env`, and the addresses that go with it:
 
   ```dotenv
-  WEB_PORT=3101
+  WEB_PORT=127.0.0.1:3101
   BETTER_AUTH_URL=http://localhost:3101
   CORS_ORIGIN=http://localhost:3101
   ```
@@ -70,7 +70,21 @@ After each fix, run `docker compose up -d`.
 - `TRUSTED_PROXIES is not set. If a reverse proxy sits in front of the web app, every visitor counts as the proxy's address and shares one sign-in rate limit: …`. Without a proxy, as on `http://localhost:3001`, nothing is wrong. Behind a proxy, set `TRUSTED_PROXIES` to its address range. See [Use an existing reverse proxy](use-an-existing-reverse-proxy.md).
 - `[auth] BETTER_AUTH_URL (http://…) is plain HTTP, so the session cookie has no Secure flag …`. Expected on `http://localhost`. On a public address, serve Freenary over HTTPS and set `BETTER_AUTH_URL` and `CORS_ORIGIN` to the `https://` address.
 - `This instance has no operator yet. The first account to sign in at http://localhost:3001 becomes the operator.` No account exists yet. Open that address and create the first account. If the address is wrong, fix `CORS_ORIGIN`. See [First run and the operator](../explanation/first-run-and-operator.md).
+- `This instance has no operator yet. Sign in at … and enter SETUP_TOKEN on the setup screen to become the operator.` `SETUP_TOKEN` is set and no account has entered it yet. Sign in, and enter the value from `.env` on **Claim this instance**.
 - `The stored value of … does not open with the current BETTER_AUTH_SECRET.` `BETTER_AUTH_SECRET` changed since the operator saved settings in the app. See [Back up and restore](back-up-and-restore.md#if-something-goes-wrong).
+
+### Other devices cannot open Freenary
+
+The root `docker-compose.yml` publishes the web app on `127.0.0.1:3001`, so only the machine that runs Docker can open it. A tunnel such as `tailscale serve` or a reverse proxy on that machine reaches it as it is.
+
+To open it to your network instead, add two lines to `.env`. `SETUP_TOKEN` takes a long random value, such as the output of `openssl rand -hex 16`:
+
+```dotenv
+SETUP_TOKEN=4c8e…(32 characters)
+WEB_PORT=3001
+```
+
+Set `BETTER_AUTH_URL` and `CORS_ORIGIN` to the address the other devices use, such as `http://192.168.1.20:3001`, and run `docker compose up -d`. Docker writes its own firewall rules, so a host firewall such as `ufw` does not close a published port. With `SETUP_TOKEN` set, a stranger who signs up first cannot become the operator: the setup screen asks for the token. See [First run and the operator](../explanation/first-run-and-operator.md).
 
 ### The browser shows an error
 
@@ -82,6 +96,11 @@ After each fix, run `docker compose up -d`.
 - After **Finish setup** or **Apply now**, the page shows **The server did not restart** and **It did not answer within one minute.** Applying settings makes the server process exit so that it starts again with them. In `docker-compose.yml` and `deploy/docker-compose.yml`, `restart: unless-stopped` starts it again. Run `docker compose ps -a`: if `server` reads `Exited`, run `docker compose up -d --wait`, then select **Try again**. If it reads `(unhealthy)` or keeps restarting, read `docker compose logs server` and match the message to the cases above.
 
   ![The Applying your settings… screen that waits for the server to come back](../images/08-applying-settings.png)
+
+### A bank stops importing
+
+- The bank in **Settings** › **Bank accounts** reads **Reconnect to resume importing**. Its consent expired or was revoked, or the bank asks for the account holder. Syncs skip this bank. Its owner selects **Reconnect** and approves the access again. The accounts the bank returns keep their transactions. An account left out of the new consent keeps its history and is no longer synced, and an account the bank never returned before is added.
+- A notice reads **Couldn’t sync** with the name of the bank, and the row does not ask to reconnect. The failure can be temporary, such as a timeout, so the next sync tries this bank again. The reason is in `docker compose logs server`.
 
 ### Sign-in fails
 

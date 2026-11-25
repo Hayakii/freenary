@@ -14,6 +14,7 @@ The self-hosted stack, from the published images. `docker compose up -d` pulls t
 ### `postgres`
 
 - Image: `postgres:18`
+- Command: `postgres -c shared_buffers=32MB`
 - Published ports: `127.0.0.1:${POSTGRES_PORT:-5432}:5432`
 - Healthcheck: `pg_isready -U postgres -d freenary`
 - Volumes: `freenary_postgres_data:/var/lib/postgresql`
@@ -41,7 +42,7 @@ The self-hosted stack, from the published images. `docker compose up -d` pulls t
 ### `web`
 
 - Image: `ghcr.io/suiramdev/freenary-web:${FREENARY_VERSION:-latest}`
-- Published ports: `${WEB_PORT:-3001}:3001`
+- Published ports: `${WEB_PORT:-127.0.0.1:3001}:3001`
 - Depends on: `server` (`service_healthy`)
 - Healthcheck: `["bun","-e","fetch('http://localhost:3001/').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]`
 - Environment it sets: `PUBLIC_SERVER_URL`, `SERVER_URL`, `TRUSTED_PROXIES`
@@ -67,7 +68,7 @@ A variable that is unset or empty takes this value.
 | `FREENARY_VERSION` | `latest`                |
 | `POSTGRES_PORT`    | `5432`                  |
 | `TRUSTED_PROXIES`  | empty                   |
-| `WEB_PORT`         | `3001`                  |
+| `WEB_PORT`         | `127.0.0.1:3001`        |
 
 ## `deploy/docker-compose.yml`
 
@@ -78,6 +79,7 @@ Three values are required: FREENARY_URL, POSTGRES_PASSWORD and BETTER_AUTH_SECRE
 ### `postgres`
 
 - Image: `postgres:18`
+- Command: `postgres -c shared_buffers=32MB`
 - Published ports: none
 - Healthcheck: `pg_isready -U postgres -d freenary`
 - Volumes: `freenary_postgres_data:/var/lib/postgresql`

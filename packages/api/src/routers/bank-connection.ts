@@ -1,13 +1,17 @@
 import { randomUUID } from "node:crypto";
 
 import prisma from "@freenary/db";
+import type { Prisma } from "@freenary/db";
 import { env } from "@freenary/env/server";
 import { ORPCError } from "@orpc/server";
 import { Data, Effect, Option } from "effect";
 import { z } from "zod";
 
 import { protectedProcedure } from "../index";
-import type { BankConnectionState } from "../lib/bank-connection-state";
+import type {
+  BankConnectionReturnTarget,
+  BankConnectionState,
+} from "../lib/bank-connection-state";
 import {
   BANK_CONNECTION_RETURN_TARGETS,
   encodeBankConnectionState,
@@ -20,11 +24,17 @@ import {
   ensureProviderUser,
   releaseProviderUser,
 } from "../lib/bank-provider-user";
+import { startAccountSync } from "../lib/bank-sync";
 import { isoAlpha2CountryCode } from "../lib/country-code";
+import { exchangeOnceWith } from "../lib/exchange-once";
 import { institutionsLoaderWith } from "../lib/institutions-cache";
+import { reopenConnection } from "../lib/reopen-connection";
 import { getDefaultProvider, getProvider } from "../providers/registry";
-import type { BankingProvider } from "../providers/types";
-import { startAccountSync } from "./budget";
+import type {
+  BankingProvider,
+  CompletedConnection,
+  ProviderInstitution,
+} from "../providers/types";
 
 class FirstSyncNotStarted extends Data.TaggedError("FirstSyncNotStarted")<{
   readonly cause: unknown;
@@ -101,10 +111,10 @@ const issueStateNonce = async (userId: string): Promise<string> => {
   return nonce;
 };
 
-const consumeStateNonce = async (
+const claimStateNonce = async (
   nonce: string,
   userId: string
-): Promise<void> => {
+): Promise<boolean> => {
   const { count } = await prisma.verification.deleteMany({
     where: {
       expiresAt: { gt: new Date() },
@@ -114,14 +124,194 @@ const consumeStateNonce = async (
     },
   });
 
-  if (count === 0) {
-    throw new ORPCError("BAD_REQUEST", {
-      message: "Bank connection state has expired or was already used",
-    });
-  }
+  return count > 0;
 };
 
+const EXCHANGED_CONNECTION = {
+  accounts: {
+    orderBy: { createdAt: "asc" },
+    select: { iban: true, name: true, providerAccountId: true },
+    where: { inConsent: true },
+  },
+  id: true,
+  institutionName: true,
+  providerSessionId: true,
+} satisfies Prisma.BankConnectionSelect;
+
+type ExchangedConnection = Prisma.BankConnectionGetPayload<{
+  select: typeof EXCHANGED_CONNECTION;
+}>;
+
+interface Exchanged {
+  readonly connection: ExchangedConnection;
+  readonly syncStartedAt: Date | null;
+}
+
+const exchangeOnce = exchangeOnceWith<Exchanged>();
+
+const findExchanged = async (
+  exchangeNonce: string,
+  userId: string
+): Promise<Exchanged | null> => {
+  const connection = await prisma.bankConnection.findFirst({
+    select: EXCHANGED_CONNECTION,
+    where: { exchangeNonce, userId },
+  });
+
+  return connection && { connection, syncStartedAt: null };
+};
+
+const startFirstSync = (
+  userId: string,
+  connectionId: string
+): Promise<Date | null> =>
+  Effect.runPromise(
+    Effect.tryPromise({
+      catch: (cause) => new FirstSyncNotStarted({ cause }),
+      try: () => startAccountSync(userId, { connectionId, force: false }),
+    }).pipe(
+      Effect.catchTag("FirstSyncNotStarted", (failure) =>
+        Effect.logWarning("First bank sync not started", failure).pipe(
+          Effect.as(null)
+        )
+      )
+    )
+  );
+
 const loadInstitutions = institutionsLoaderWith();
+
+interface ConsentRequest {
+  readonly connection?: { readonly id: string; readonly sessionId: string };
+  readonly institution: ProviderInstitution;
+  readonly original?: string;
+  readonly provider: BankingProvider;
+  readonly returnTo: BankConnectionReturnTarget;
+  readonly userId: string;
+}
+
+const startConsent = async ({
+  connection,
+  institution,
+  original,
+  provider,
+  returnTo,
+  userId,
+}: ConsentRequest): Promise<{ url: string }> => {
+  const providerUser = await ensureProviderUser(userId, provider);
+  const nonce = await issueStateNonce(userId);
+
+  return await provider.startConnection({
+    country: institution.country,
+    institutionId: institution.id,
+    providerSessionId: connection?.sessionId,
+    redirectUrl: `${env.CORS_ORIGIN}${provider.callbackPath}`,
+    state: encodeBankConnectionState({
+      connectionId: connection?.id,
+      institution,
+      nonce,
+      original,
+      providerId: provider.id,
+      returnTo,
+      secret: env.BETTER_AUTH_SECRET,
+      userId,
+    }),
+    user: providerUser,
+  });
+};
+
+interface ConsentOutcome {
+  readonly providerSessionId?: string;
+  readonly store: (
+    completed: CompletedConnection,
+    exchangeNonce: string
+  ) => Promise<ExchangedConnection>;
+}
+
+const requireConnection = async (connectionId: string, userId: string) => {
+  const connection = await prisma.bankConnection.findFirst({
+    where: { id: connectionId, userId },
+  });
+
+  if (!connection) {
+    throw new ORPCError("NOT_FOUND", { message: "Bank connection not found" });
+  }
+
+  return connection;
+};
+
+const reopening = async (
+  connectionId: string,
+  userId: string
+): Promise<ConsentOutcome> => {
+  const { providerSessionId } = await requireConnection(connectionId, userId);
+
+  return {
+    providerSessionId,
+    store: async (completed, exchangeNonce) => {
+      await reopenConnection(connectionId, completed, exchangeNonce);
+
+      return await prisma.bankConnection.findUniqueOrThrow({
+        select: EXCHANGED_CONNECTION,
+        where: { id: connectionId },
+      });
+    },
+  };
+};
+
+const opening = async (
+  { institution: chosen }: BankConnectionState,
+  provider: BankingProvider,
+  userId: string
+): Promise<ConsentOutcome> => {
+  const institution = findInstitution(
+    await loadInstitutions(provider),
+    chosen.id,
+    chosen.country
+  );
+
+  if (!institution) {
+    throw new ORPCError("BAD_REQUEST", {
+      message: "Bank institution is no longer available",
+    });
+  }
+
+  return {
+    store: (completed, exchangeNonce) =>
+      prisma.bankConnection.upsert({
+        create: {
+          accounts: {
+            create: completed.accounts.map((account) => ({
+              currency: account.currency ?? null,
+              iban: account.iban ?? null,
+              identificationHash: account.identificationHash ?? null,
+              name: account.name ?? null,
+              providerAccountId: account.providerAccountId,
+              type: account.type,
+            })),
+          },
+          exchangeNonce,
+          institutionBic: institution.bic ?? null,
+          institutionCountry: institution.country,
+          institutionGroup:
+            completed.institutionGroup ?? institution.group ?? null,
+          institutionId: institution.id,
+          institutionName: completed.institutionName.trim() || institution.name,
+          provider: provider.id,
+          providerSessionId: completed.providerSessionId,
+          userId,
+        },
+        select: EXCHANGED_CONNECTION,
+        update: { exchangeNonce },
+        where: {
+          userId_provider_providerSessionId: {
+            provider: provider.id,
+            providerSessionId: completed.providerSessionId,
+            userId,
+          },
+        },
+      }),
+  };
+};
 
 export const bankConnectionRouter = {
   disconnect: protectedProcedure
@@ -196,19 +386,9 @@ export const bankConnectionRouter = {
 
       const connectionState = readConnectionState(state, provider.id, userId);
 
-      const institutions = await loadInstitutions(provider);
-
-      const institution = findInstitution(
-        institutions,
-        connectionState.institution.id,
-        connectionState.institution.country
-      );
-
-      if (!institution) {
-        throw new ORPCError("BAD_REQUEST", {
-          message: "Bank institution is no longer available",
-        });
-      }
+      const outcome = connectionState.connectionId
+        ? await reopening(connectionState.connectionId, userId)
+        : await opening(connectionState, provider, userId);
 
       const providerUser = await findProviderUser(userId, provider);
 
@@ -218,72 +398,38 @@ export const bankConnectionRouter = {
         });
       }
 
-      await consumeStateNonce(connectionState.nonce, userId);
+      const { nonce } = connectionState;
 
-      const completed = await provider.completeConnection({
-        callbackParams: input.params,
-        user: providerUser,
+      const { connection, syncStartedAt } = await exchangeOnce({
+        claim: () => claimStateNonce(nonce, userId),
+        exchange: async () => {
+          const completed = await provider.completeConnection({
+            callbackParams: input.params,
+            providerSessionId: outcome.providerSessionId,
+            user: providerUser,
+          });
+
+          const stored = await outcome.store(completed, nonce);
+
+          return {
+            connection: stored,
+            syncStartedAt: await startFirstSync(userId, stored.id),
+          };
+        },
+        findExchanged: () => findExchanged(nonce, userId),
+        nonce,
       });
-
-      const providerInstitutionName = completed.institutionName.trim();
-      const bankName = providerInstitutionName || institution.name;
-
-      const connection = await prisma.$transaction(async (db) => {
-        const created = await db.bankConnection.create({
-          data: {
-            institutionBic: institution.bic ?? null,
-            institutionCountry: institution.country,
-            institutionGroup:
-              completed.institutionGroup ?? institution.group ?? null,
-            institutionId: institution.id,
-            institutionName: bankName,
-            provider: provider.id,
-            providerSessionId: completed.providerSessionId,
-            userId,
-          },
-        });
-
-        await db.bankAccount.createMany({
-          data: completed.accounts.map((account) => ({
-            connectionId: created.id,
-            iban: account.iban ?? null,
-            identificationHash: account.identificationHash ?? null,
-            name: account.name ?? null,
-            providerAccountId: account.providerAccountId,
-            type: account.type,
-          })),
-        });
-
-        return created;
-      });
-
-      const syncStartedAt = await Effect.runPromise(
-        Effect.tryPromise({
-          catch: (cause) => new FirstSyncNotStarted({ cause }),
-          try: () =>
-            startAccountSync(userId, {
-              connectionId: connection.id,
-              force: false,
-            }),
-        }).pipe(
-          Effect.catchTag("FirstSyncNotStarted", (failure) =>
-            Effect.logWarning("First bank sync not started", failure).pipe(
-              Effect.as(null)
-            )
-          )
-        )
-      );
 
       return {
-        accounts: completed.accounts.map((a) => ({
-          iban: a.iban,
-          name: a.name,
-          uid: a.providerAccountId,
+        accounts: connection.accounts.map((account) => ({
+          iban: account.iban ?? undefined,
+          name: account.name ?? undefined,
+          uid: account.providerAccountId,
         })),
         connectionId: connection.id,
-        institutionName: bankName,
+        institutionName: connection.institutionName,
         returnTo: connectionState.returnTo,
-        sessionId: completed.providerSessionId,
+        sessionId: connection.providerSessionId,
         syncStartedAt,
       };
     }),
@@ -342,6 +488,39 @@ export const bankConnectionRouter = {
     return { banks };
   }),
 
+  reconnect: protectedProcedure
+    .input(
+      z.object({
+        connectionId: z.string(),
+        returnTo: z.enum(BANK_CONNECTION_RETURN_TARGETS),
+      })
+    )
+    .handler(async ({ context, input }) => {
+      const userId = context.session.user.id;
+      const connection = await requireConnection(input.connectionId, userId);
+
+      if (!(connection.institutionId && connection.institutionCountry)) {
+        throw new ORPCError("BAD_REQUEST", {
+          message: "Bank connection has no institution to reconnect to",
+        });
+      }
+
+      return await startConsent({
+        connection: {
+          id: connection.id,
+          sessionId: connection.providerSessionId,
+        },
+        institution: {
+          country: connection.institutionCountry,
+          id: connection.institutionId,
+          name: connection.institutionName,
+        },
+        provider: resolveProvider(connection.provider),
+        returnTo: input.returnTo,
+        userId,
+      });
+    }),
+
   startConnection: protectedProcedure
     .input(
       z.object({
@@ -368,25 +547,12 @@ export const bankConnectionRouter = {
         });
       }
 
-      const providerUser = await ensureProviderUser(userId, provider);
-      const redirectUrl = `${env.CORS_ORIGIN}${provider.callbackPath}`;
-      const nonce = await issueStateNonce(userId);
-      const encodedState = encodeBankConnectionState({
+      return await startConsent({
         institution,
-        nonce,
         original: input.state,
-        providerId: provider.id,
+        provider,
         returnTo: input.returnTo,
-        secret: env.BETTER_AUTH_SECRET,
         userId,
-      });
-
-      return await provider.startConnection({
-        country: input.bankCountry,
-        institutionId: institution.id,
-        redirectUrl,
-        state: encodedState,
-        user: providerUser,
       });
     }),
 };

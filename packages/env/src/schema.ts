@@ -386,6 +386,20 @@ export const serverEnvSchema = {
     secret: true,
     section: "email",
   }),
+  SETUP_TOKEN: z
+    .string()
+    .min(16)
+    .optional()
+    .describe(
+      "While the instance has no operator, the setup screen asks for this value before it makes a signed-in account the operator. Unset, the first account to sign in becomes the operator."
+    )
+    .meta({
+      example: "a-long-random-value-you-keep",
+      onError:
+        "Under 16 characters stops the start. Set it before you make the web app reachable from other machines, so a stranger who signs up first cannot become the operator.",
+      secret: true,
+      section: "sign-in",
+    }),
   SMTP_HOST: z.string().optional().describe("The mail host.").meta({
     example: "smtp.example.com",
     onError: "`smtp` stops the start without it.",
@@ -596,7 +610,7 @@ export const serverEnvSchema = {
         .optional()
     )
     .describe(
-      "The addresses or CIDR ranges of the proxies in front of the web app, as the web container sees them. The web app replaces `X-Forwarded-For` with the caller address behind them, and rate limits key on it. Compose hands it to the `web` service too."
+      "The addresses or CIDR ranges of the proxies in front of the web app, as the web container sees them. The web app replaces `X-Forwarded-For` with the caller address behind them, and rate limits key on it. When the caller is itself in a listed range, they key on the address of the connection, so callers behind one proxy share a bucket. Compose hands it to the `web` service too."
     )
     .meta({
       example: "172.18.0.0/16",

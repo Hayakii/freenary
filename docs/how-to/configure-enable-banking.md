@@ -7,7 +7,7 @@ This page connects Freenary to Enable Banking, the other bank provider Freenary 
 
 ## Before you start
 
-- Freenary runs, and you can sign in as the operator. The operator is the first account created on the instance, and only the operator sees the setup screen and the **Services** list in **Settings**.
+- Freenary runs, and you can sign in as the operator. The operator is the account that claimed the instance (see [First run and the operator](../explanation/first-run-and-operator.md)), and only the operator sees the setup screen and the **Services** list in **Settings**.
 - You know the web address of your instance, for example `http://localhost:3001`. After a member connects a bank, Enable Banking sends them back to that address followed by `/callback/enable-banking`.
 - You have an application registered in the [Enable Banking control panel](https://enablebanking.com/sign-in/), with its application ID and its private key in PEM form.
 
@@ -23,7 +23,7 @@ This page connects Freenary to Enable Banking, the other bank provider Freenary 
 4. On **Step 2 of 3**, select **Copy** next to **Redirect URL**, and add this redirect URL to your application in the Enable Banking control panel. Select **Next**.
 5. On **Step 3 of 3**, paste your application's private key in **Private key (PEM)**, the `BEGIN` and `END` lines included.
 6. Select **Save and continue** on the setup screen, or **Save** in **Settings**. Freenary first tests the credentials, then saves them.
-7. If members already connected banks through Powens, **Settings** asks **Switch the bank provider?** Their bank connections can no longer sync, and each owner has to disconnect the bank and connect it again. Select **Switch provider** to go on.
+7. If members already connected banks through Powens, **Settings** asks **Switch the bank provider?** Their bank connections can no longer sync, and each owner has to remove the bank and connect it again. Select **Switch provider** to go on.
 8. Apply the change. On the setup screen, go on to the **Done** step and select **Finish setup**. In **Settings**, select **Apply now** in the **Restart to apply your changes** notice. The page shows **Applying your settings…** while the server restarts.
 
 ### In `.env`
